@@ -9,23 +9,8 @@ Header for Tensor class
 #include <memory>
 #include "storage.h"
 #include "function.h"
+#include "types.h"
 
-
-enum class Device {
-    CPU,
-    GPU,
-};
-
-enum class Dtype {
-    FLOAT64,
-    FLOAT32,
-    INT64,
-    INT32,
-    INT16,
-    INT8,
-    UINT8,
-    BOOL,
-};
 
 class Tensor {
     private:
@@ -46,7 +31,7 @@ class Tensor {
         // backward
         void backward();
 
-        Tensor to(Device device) const;
+        Tensor to(Device device) const; // move to device
 
         // getters / setters
         std::shared_ptr<Storage> get_data() const;
