@@ -49,19 +49,19 @@ class Tensor {
         Tensor to(Device device) const;
 
         // getters / setters
-        std::shared_ptr<Storage> get_data() const { return data; }
-        Device get_device() const { return device; }
-        Dtype get_dtype() const { return dtype; }
-        const std::vector<int64_t>& get_shape() const { return shape; }
+        std::shared_ptr<Storage> get_data() const;
+        Device get_device() const;
+        Dtype get_dtype() const;
+        const std::vector<int64_t>& get_shape() const;
     
-        bool get_requires_grad() const { return requires_grad; }
+        bool get_requires_grad() const;
         void set_requires_grad(bool value);
 
-        std::shared_ptr<Tensor> get_grad() const { return grad; }
-        void set_grad(std::shared_ptr<Tensor> value) { grad = value; }
+        std::shared_ptr<Tensor> get_grad() const;
+        void set_grad(std::shared_ptr<Tensor> value);
 
-        std::shared_ptr<Function> get_grad_fn() const { return grad_fn; }
-        void set_grad_fn(std::shared_ptr<Function> value) { grad_fn = value; }
+        std::shared_ptr<Function> get_grad_fn() const;
+        void set_grad_fn(std::shared_ptr<Function> value);
         
 
 };
