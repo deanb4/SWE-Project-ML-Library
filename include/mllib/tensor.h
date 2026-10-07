@@ -28,7 +28,7 @@ class Tensor {
     public:
         // constructor
         Tensor(std::shared_ptr<Storage> data, std::vector<int64_t> shape,
-                Device device = Device::CPU, bool requires_grad, Dtype dtype = Dtype::FLOAT32);
+                Device device = Device::CPU, bool requires_grad = false, Dtype dtype = Dtype::FLOAT32);
         
         // backward
         void backward();

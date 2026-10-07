@@ -1,3 +1,6 @@
+#ifndef TYPES_H
+#define TYPES_H
+
 enum class Device {
     CPU,
     GPU,
@@ -13,3 +16,5 @@ enum class Dtype {
     UINT8,
     BOOL,
 };
+
+#endif
