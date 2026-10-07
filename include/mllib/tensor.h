@@ -12,6 +12,7 @@ Header for Tensor class
 #include "types.h"
 
 
+
 class Tensor {
     private:
         std::shared_ptr<Storage> data; // Need to create class
@@ -21,17 +22,18 @@ class Tensor {
         bool requires_grad;
         std::shared_ptr<Function> grad_fn; // need to create class
         std::shared_ptr<Tensor> grad;
+        size_t num_elements() const;
         
 
     public:
         // constructor
         Tensor(std::shared_ptr<Storage> data, std::vector<int64_t> shape,
-                Device device = Device::CPU, bool requires_grad = false, Dtype dtype = Dtype::FLOAT32);
+                Device device = Device::CPU, bool requires_grad, Dtype dtype = Dtype::FLOAT32);
         
         // backward
         void backward();
 
-        Tensor to(Device device) const; // move to device
+        Tensor to(Device target_device) const; // move to device
 
         // getters / setters
         std::shared_ptr<Storage> get_data() const;
@@ -43,10 +45,10 @@ class Tensor {
         void set_requires_grad(bool value);
 
         std::shared_ptr<Tensor> get_grad() const;
-        void set_grad(std::shared_ptr<Tensor> value);
+        void set_grad(std::shared_ptr<Tensor>& value);
 
         std::shared_ptr<Function> get_grad_fn() const;
-        void set_grad_fn(std::shared_ptr<Function> value);
+        void set_grad_fn(const std::shared_ptr<Function>& value);
         
 
 };
