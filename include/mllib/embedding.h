@@ -56,7 +56,7 @@ class Embedding {
          * rows from the embedding table.
          * 
          * If `ids` has shape `(T)`, the output has shape: (T, embed_dim)
-         * If `ids` has shape `(B, T)`, the output has shape: (B, T, embed_dim)
+         * If batch `ids` has shape `(B, T)`, the output has shape: (B, T, embed_dim)
          * 
          * Each token ID must be in the range `[0, vocab_size)`. An invalid ID should result in 
          * an error rather than an out-of-bounds access.
