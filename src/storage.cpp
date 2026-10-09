@@ -14,7 +14,7 @@ Storage::Storage(size_t size, Device device) : buffer(nullptr), nbytes(size), de
 }
 
 Storage::~Storage() {
-   delete buffer;
+   delete[] static_cast<std::byte*>(buffer);
 }
 
 std::shared_ptr<Storage> Storage::copy_to(Device target) const {
@@ -26,7 +26,7 @@ std::shared_ptr<Storage> Storage::copy_to(Device target) const {
     return out;
   }
 
-  throw std::runtime_error("Only CPY -> CPU copies are supported for now");
+  throw std::runtime_error("Only CPU -> CPU copies are supported for now");
 }
 
 
