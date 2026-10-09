@@ -57,7 +57,20 @@ Embedding::Embedding(size_t vocab_size, size_t embed_dim)
     : weight(create_embedding_table(vocab_size, embed_dim)) { }
 
 Tensor Embedding::forward(const Tensor& ids) const {
-    //
+    const std::vector<int64_t>& input_shape = ids.get_shape();
+
+    //Only rank 1 or rank 2 ID tensors are accepted as inputs
+    if(input_shape.size() != 1 && input_shape.size() != 2) {
+        throw std::invalid_argument("Embedding::forward: ids must have shape (T) or (B,T)");
+    }
+
+    //Currently only CPU supported MAKE NOTE OF THIS <------------------------------------------------------------------------------------
+    if(ids.get_device() != Device::CPU) {
+        throw std::invalid_argument("Embedding::forward: only CPU tensors are supported");
+    }
+
+    
+
 }
 
 std::shared_ptr<Tensor> Embedding::parameters() const {
