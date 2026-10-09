@@ -2,7 +2,12 @@
 #define FUNCTION_
 
 #include <string>
-#include "tensor.h"
+#include <vector>
+
+#ifndef TENSOR_H
+    #include "tensor.h"
+#endif
+
 
 class Function {
 	private:
@@ -10,6 +15,7 @@ class Function {
 		std::shared_ptr<Tensor> inputs;
 		std::shared_ptr<Tensor> saved_tensors;
 	public:
+        Function(std::string op_type, std::shared_ptr<Tensor> inputs, std::shared_ptr<Tensor> saved_tensors);
 		Tensor add(const Tensor& a, const Tensor& b); 
 		Tensor sub(const Tensor& a, const Tensor& b);
 		Tensor mul(const Tensor& a, const Tensor& b);

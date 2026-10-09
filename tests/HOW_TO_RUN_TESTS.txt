@@ -1,0 +1,90 @@
+HOW TO RUN THE UNIT TESTS
+=========================
+
+The tests live in tests/test_function.cpp and use GoogleTest. You don't need to
+install GoogleTest: CMake downloads it automatically the first time you configure.
+
+
+REQUIREMENTS
+------------
+- CMake 3.20 or newer
+- A C++17 compiler (we use Visual Studio 2026 Build Tools, "Desktop development with C++")
+- Internet access the first time you configure (to download GoogleTest)
+
+
+FIRST TIME ONLY (from the project root)
+---------------------------------------
+    cmake -S . -B build
+
+This creates the build/ folder. The first run takes a minute or so while it downloads
+GoogleTest.
+
+
+EVERY TIME YOU CHANGE CODE
+--------------------------
+1. Build:
+       cmake --build build --config Debug
+
+2. Run the tests:
+       ctest --test-dir build -C Debug --output-on-failure
+
+Or both in one line. The tests only run if the build succeeds:
+       cmake --build build --config Debug && ctest --test-dir build -C Debug --output-on-failure
+
+On Linux/macOS you can drop "--config Debug" and "-C Debug".
+
+
+IMPORTANT: ctest DOES NOT REBUILD
+---------------------------------
+ctest only runs the test program that already exists. If you skip the build step,
+or the build fails, you're testing the OLD code. Always check the build finished
+with no errors before trusting the results.
+
+
+READING THE RESULTS
+-------------------
+    1/43 Test  #1: Add.Float32Values ......   Passed    0.01 sec
+
+Each line is one test (Suite.TestName). At the end you get a summary such as
+"100% tests passed, 0 tests failed out of 43".
+
+A failing test prints the file and line of the check that failed, plus the expected
+and actual values. For example:
+    test_function.cpp(412): error: ... evaluates to 1087937 ... 1000000
+
+You can safely ignore this message during the build:
+    'pwsh.exe' is not recognized as an internal or external command
+It comes from Visual Studio's vcpkg integration and doesn't affect our build.
+
+
+RUNNING ONLY SOME TESTS
+-----------------------
+Run the test program directly with a filter:
+    build\Debug\test_function.exe                          (all tests)
+    build\Debug\test_function.exe --gtest_filter=Sum.*     (only the sum tests)
+    build\Debug\test_function.exe --gtest_filter=*Matmul*  (names containing Matmul)
+
+
+ADDING TESTS FOR A NEW OP
+-------------------------
+Always use GoogleTest, the same framework as the existing tests. Don't add another
+test framework or write a homemade one, so all tests run the same way.
+
+The easiest way to write new tests is to ask Claude (or another AI model) to do it.
+Give it:
+  - the code of your new op
+  - tests/test_function.cpp, and ask it to follow the same style and helpers
+Before you trust the tests it writes, check its expected values by hand. A model can
+get the math wrong, and a test with a wrong expected value is worse than no test.
+Then build and run as above.
+
+If you write tests yourself:
+- Add them to tests/test_function.cpp. Use the existing helpers:
+    make_tensor<float>({1, 2, 3, 4}, {2, 2}, Dtype::FLOAT32)  builds a tensor
+    to_vector<float>(t)                                      reads its values back
+- Write each test as TEST_F(OpName, WhatItChecks) { ... } and call ops through F,
+  e.g. F.exp(t).
+- Work out expected values by hand. Never compute them by calling the code under test.
+- Cover normal cases, edge cases (empty, single element, negatives) and error cases
+  (EXPECT_THROW).
+- Rebuild and run as above. New tests are picked up automatically.
