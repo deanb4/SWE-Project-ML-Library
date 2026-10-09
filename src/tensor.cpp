@@ -3,7 +3,7 @@
 #include "mllib/autograd.h"
 
 Tensor::Tensor(std::shared_ptr<Storage> data, std::vector<int64_t> shape,
-                Device device, bool requires_grad = false, Dtype dtype) :
+                Device device, bool requires_grad, Dtype dtype) :
                 data(std::move(data)), shape(std::move(shape)), device(device), requires_grad(requires_grad), dtype(dtype) {
     // Error checking
 

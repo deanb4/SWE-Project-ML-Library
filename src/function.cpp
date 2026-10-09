@@ -10,23 +10,23 @@ namespace {
     void mean_kernel(const void* a, void* out, size_t N) {
         const T* a_ptr = static_cast<const T*>(a);
         T* out_ptr = static_cast<T*>(out);
-        T sum = 0;
+        double sum = 0;
         for (size_t i = 0; i < N; ++i) {
             sum += a_ptr[i];
         }
-        T mean = sum / static_cast<T>(N);
-        out_ptr[0] = mean;
+        double mean = sum / static_cast<double>(N);
+        out_ptr[0] = static_cast<T>(mean);
     }
 
     template<typename T>
     void sum_kernel(const void* a, void* out, size_t N) {
         const T* a_ptr = static_cast<const T*>(a);
         T* out_ptr = static_cast<T*>(out);
-        T sum = 0;
+        double sum = 0;
         for (size_t i = 0; i < N; ++i) {
             sum += a_ptr[i];
         }
-        out_ptr[0] = sum;
+        out_ptr[0] = static_cast<T>(sum);
     }
 
     template<typename T>

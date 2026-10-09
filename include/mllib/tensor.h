@@ -8,9 +8,12 @@ Header for Tensor class
 #include <cstdint>
 #include <memory>
 #include "storage.h"
-#include "function.h"
 #include "types.h"
 
+// #ifndef FUNCTION_
+//     #include "function.h"
+// #endif
+class Function; // forward declaration 
 
 
 class Tensor {
@@ -22,8 +25,6 @@ class Tensor {
         bool requires_grad;
         std::shared_ptr<Function> grad_fn; // need to create class
         std::shared_ptr<Tensor> grad;
-        size_t num_elements() const;
-        
 
     public:
         // constructor
@@ -49,6 +50,8 @@ class Tensor {
 
         std::shared_ptr<Function> get_grad_fn() const;
         void set_grad_fn(const std::shared_ptr<Function>& value);
+
+        size_t num_elements() const;
         
 
 };
