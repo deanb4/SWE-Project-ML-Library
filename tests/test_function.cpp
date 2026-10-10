@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "mllib/function.h"
+#include "mllib/embedding.h"
 #include "mllib/storage.h"
 #include "mllib/tensor.h"
 
@@ -475,3 +476,153 @@ TEST_F(Mean, Float32LargeInputStaysAccurate) {
     Tensor t = make_tensor(std::vector<float>(n, 0.1f), {static_cast<int64_t>(n)}, Dtype::FLOAT32);
     EXPECT_NEAR(to_vector<float>(F.mean(t))[0], 0.1f, 1e-6f);
 }
+
+
+// ---------------------------------------------------------------------------
+// Embedding
+// ---------------------------------------------------------------------------
+
+namespace {
+
+const std::vector<float> kEmbeddingWeights = {
+    10, 11, 12,  // token 0
+    20, 21, 22,  // token 1
+    30, 31, 32,  // token 2
+    40, 41, 42   // token 3
+};
+
+// Embedding initializes weights randomly, so overwrite them with known values
+// through parameters() before checking exact forward results.
+void set_embedding_weights(Embedding& embedding,
+                           const std::vector<float>& values) {
+    auto table = embedding.parameters();
+    if (table->num_elements() != values.size()) {
+        throw std::invalid_argument(
+            "set_embedding_weights: value count does not match table size");
+    }
+    if (!values.empty()) {
+        std::memcpy(table->get_data()->get_ptr(), values.data(),
+                    values.size() * sizeof(float));
+    }
+}
+
+class EmbeddingTest : public ::testing::Test {};
+
+}  // namespace
+
+TEST_F(EmbeddingTest, SequenceInputLooksUpRowsAndSupportsRepeatedIds) {
+    Embedding embedding(/*vocab_size=*/4, /*embed_dim=*/3);
+    set_embedding_weights(embedding, kEmbeddingWeights);
+
+    // Token 2 is intentionally repeated. Its row should appear at both positions.
+    Tensor ids = make_tensor<int64_t>({2, 0, 2}, {3}, Dtype::INT64);
+    Tensor out = embedding.forward(ids);
+
+    EXPECT_EQ(out.get_shape(), (std::vector<int64_t>{3, 3}));
+    EXPECT_EQ(out.get_dtype(), Dtype::FLOAT32);
+    EXPECT_EQ(out.get_device(), Device::CPU);
+    EXPECT_EQ(to_vector<float>(out),
+              (std::vector<float>{30, 31, 32,
+                                  10, 11, 12,
+                                  30, 31, 32}));
+}
+
+TEST_F(EmbeddingTest, BatchedInputHasShapeBatchTimeEmbeddingDim) {
+    Embedding embedding(/*vocab_size=*/4, /*embed_dim=*/3);
+    set_embedding_weights(embedding, kEmbeddingWeights);
+
+    Tensor ids = make_tensor<int64_t>({3, 0, 2, 1}, {2, 2}, Dtype::INT64);
+    Tensor out = embedding.forward(ids);
+
+    EXPECT_EQ(out.get_shape(), (std::vector<int64_t>{2, 2, 3}));
+    EXPECT_EQ(out.get_dtype(), Dtype::FLOAT32);
+    EXPECT_EQ(to_vector<float>(out),
+              (std::vector<float>{40, 41, 42,
+                                  10, 11, 12,
+                                  30, 31, 32,
+                                  20, 21, 22}));
+}
+
+TEST_F(EmbeddingTest, ParametersReturnsTheLearnableTable) {
+    Embedding embedding(/*vocab_size=*/4, /*embed_dim=*/3);
+
+    auto table = embedding.parameters();
+    ASSERT_NE(table, nullptr);
+    EXPECT_EQ(table->get_shape(), (std::vector<int64_t>{4, 3}));
+    EXPECT_TRUE(table->get_requires_grad());
+
+    // parameters() may return a Tensor wrapper by value, but it must reference the
+    // same underlying table storage on each call.
+    auto table_again = embedding.parameters();
+    ASSERT_NE(table_again, nullptr);
+    EXPECT_EQ(table->get_data().get(), table_again->get_data().get());
+
+    set_embedding_weights(embedding, kEmbeddingWeights);
+    Tensor ids = make_tensor<int64_t>({1}, {1}, Dtype::INT64);
+    EXPECT_EQ(to_vector<float>(embedding.forward(ids)),
+              (std::vector<float>{20, 21, 22}));
+}
+
+TEST_F(EmbeddingTest, AcceptsSupportedIntegerTokenDtypes) {
+    Embedding embedding(/*vocab_size=*/4, /*embed_dim=*/3);
+    set_embedding_weights(embedding, kEmbeddingWeights);
+
+    EXPECT_EQ(to_vector<float>(embedding.forward(
+                  make_tensor<int64_t>({1}, {1}, Dtype::INT64))),
+              (std::vector<float>{20, 21, 22}));
+    EXPECT_EQ(to_vector<float>(embedding.forward(
+                  make_tensor<int32_t>({1}, {1}, Dtype::INT32))),
+              (std::vector<float>{20, 21, 22}));
+    EXPECT_EQ(to_vector<float>(embedding.forward(
+                  make_tensor<int16_t>({1}, {1}, Dtype::INT16))),
+              (std::vector<float>{20, 21, 22}));
+    EXPECT_EQ(to_vector<float>(embedding.forward(
+                  make_tensor<int8_t>({1}, {1}, Dtype::INT8))),
+              (std::vector<float>{20, 21, 22}));
+    EXPECT_EQ(to_vector<float>(embedding.forward(
+                  make_tensor<uint8_t>({1}, {1}, Dtype::UINT8))),
+              (std::vector<float>{20, 21, 22}));
+}
+
+TEST_F(EmbeddingTest, RejectsBooleanTokenIds) {
+    Embedding embedding(/*vocab_size=*/4, /*embed_dim=*/3);
+    Tensor ids = make_tensor<uint8_t>({0, 1}, {2}, Dtype::BOOL);
+
+    EXPECT_THROW(embedding.forward(ids), std::invalid_argument);
+}
+
+TEST_F(EmbeddingTest, NegativeTokenIdThrowsOutOfRange) {
+    Embedding embedding(/*vocab_size=*/4, /*embed_dim=*/3);
+    Tensor ids = make_tensor<int64_t>({-1}, {1}, Dtype::INT64);
+
+    EXPECT_THROW(embedding.forward(ids), std::out_of_range);
+}
+
+TEST_F(EmbeddingTest, TokenIdEqualToVocabSizeThrowsOutOfRange) {
+    Embedding embedding(/*vocab_size=*/4, /*embed_dim=*/3);
+    Tensor ids = make_tensor<int64_t>({4}, {1}, Dtype::INT64);
+
+    EXPECT_THROW(embedding.forward(ids), std::out_of_range);
+}
+
+TEST_F(EmbeddingTest, RejectsNonIntegerTokenIds) {
+    Embedding embedding(/*vocab_size=*/4, /*embed_dim=*/3);
+    Tensor ids = make_tensor<float>({0.0f, 1.0f}, {2}, Dtype::FLOAT32);
+
+    EXPECT_THROW(embedding.forward(ids), std::invalid_argument);
+}
+
+TEST_F(EmbeddingTest, RejectsInputRankOtherThanOneOrTwo) {
+    Embedding embedding(/*vocab_size=*/4, /*embed_dim=*/3);
+    Tensor ids = make_tensor<int64_t>({0, 1}, {1, 1, 2}, Dtype::INT64);
+
+    EXPECT_THROW(embedding.forward(ids), std::invalid_argument);
+}
+
+// Gradient acceptance tests still need to be added once Embedding::forward is
+// connected to the project's autograd graph. The current implementation copies
+// rows into fresh output storage and does not register a backward/grad function.
+// For ids [2, 0, 2], the analytical gradient of sum(forward(ids)) with respect
+// to the 4x3 table should be row 0: [1,1,1], row 1: [0,0,0], row 2: [2,2,2],
+// row 3: [0,0,0]. A gradient checker should compare those analytical values
+// with finite differences after backward propagation is implemented.
