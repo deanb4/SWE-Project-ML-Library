@@ -34,7 +34,7 @@ class Function {
         Tensor softmax(const Tensor& a, int dim);
         // Josh ********************************
 
-        Tensor reshape(const Tensor& a, const std::vector<int>& shape);
+        Tensor reshape(const Tensor& a, const std::vector<int64_t>& shape);
         Tensor transpose(const Tensor& a, int dim0, int dim1);
         std::vector<Tensor> backward(const Tensor& grad_output);
 };

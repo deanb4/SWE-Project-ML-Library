@@ -60,6 +60,8 @@ namespace {
         }
     }
 
+
+
     template<typename Op>
     Tensor binary_op(const Tensor& a, const Tensor& b, const std::string& name, Op op) {
         // Add error checking
@@ -80,9 +82,9 @@ namespace {
         size_t n = a.num_elements();
         auto out_storage = std::make_shared<Storage>(n * dtype_size(dtype), Device::CPU);
 
-        const void* a_data = a.get_data()->get_ptr();
-        const void* b_data = b.get_data()->get_ptr();
-        void* out_data = out_storage->get_ptr();
+        const void* a_data = a.get_data()->get_ptr(); // data tensor 1
+        const void* b_data = b.get_data()->get_ptr(); // data tensor 2
+        void* out_data = out_storage->get_ptr(); // where data goes for answer
 
         // add matrices according to dtype
         switch (dtype) {
@@ -297,3 +299,60 @@ Tensor Function::mean(const Tensor& a) {
     bool requires_grad = a.get_requires_grad();
     return Tensor(out_storage, {1}, Device::CPU, requires_grad, dtype);
 }
+
+
+Tensor Function::reshape(const Tensor& a, const std::vector<int64_t>& shape) {
+    int64_t num_elements = static_cast<int64_t>(a.num_elements());
+
+    // new shape array
+    std::vector<int64_t> new_shape = shape;
+    // error checking
+    int64_t known = 1;
+    bool has_infer = false;
+    size_t infer_idx = 0;
+
+    // single pass over dim
+    for (size_t i = 0; i < new_shape.size(); ++i) {
+        if (new_shape[i] == -1) {
+            if (has_infer) {
+                throw std::runtime_error("reshape: only one dimnesion can be -1");
+            }
+
+            has_infer = true;
+            infer_idx = i;
+        } else if (new_shape[i] < 0) {
+            throw std::runtime_error("reshape: invalid dimension " + std::to_string(new_shape[i]));
+        } else {
+            known *= new_shape[i];
+        }
+    }
+
+    if (has_infer) {
+        if (known == 0) {
+            throw std::runtime_error("reshape: cannot infer -1 when antoher dimension is 0");
+        }
+
+        if (num_elements % known != 0) {
+            throw std::runtime_error("reshape: shape is invalid for input of size" + 
+                                    std::to_string(num_elements));
+        }
+    } else if (known != num_elements) {
+        throw std::runtime_error("reshape: shape is invalid for input of size " + std::to_string(num_elements));
+    }
+
+    // return tensor
+    return Tensor(a.get_data(), new_shape, a.get_device(), 
+                  a.get_requires_grad(), a.get_dtype());
+}
+
+Tensor Function::transpose(const Tensor& a, int dim0, int dim1) {
+
+}
+
+std::vector<Tensor> Function::backward(const Tensor& grad_output) {
+
+}
+
+//   Tensor reshape(const Tensor& a, const std::vector<int>& shape);
+//         Tensor transpose(const Tensor& a, int dim0, int dim1);
+//         std::vector<Tensor> backward(const Tensor& grad_output);
