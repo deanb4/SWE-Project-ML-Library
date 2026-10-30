@@ -13,6 +13,7 @@
 
 #include "mllib/function.h"
 #include "mllib/embedding.h"
+#include "mllib/conv2d.h"
 #include "mllib/storage.h"
 #include "mllib/tensor.h"
 
@@ -626,3 +627,110 @@ TEST_F(EmbeddingTest, RejectsInputRankOtherThanOneOrTwo) {
 // to the 4x3 table should be row 0: [1,1,1], row 1: [0,0,0], row 2: [2,2,2],
 // row 3: [0,0,0]. A gradient checker should compare those analytical values
 // with finite differences after backward propagation is implemented.
+
+
+// ---------------------------------------------------------------------------
+// Conv2d
+// ---------------------------------------------------------------------------
+
+namespace {
+
+class Conv2dTest : public ::testing::Test {};
+
+}  // namespace
+
+TEST_F(Conv2dTest, WeightAndBiasHaveExpectedShapes) {
+    // Weight: (out_channels, in_channels, kernel_size, kernel_size)
+    // Bias:   (out_channels)
+    Conv2d conv(/*in_channels=*/10, /*out_channels=*/5,
+                /*kernel_size=*/3, /*stride=*/1, /*padding=*/0);
+    const std::vector<Tensor> params = conv.parameters();
+
+    ASSERT_EQ(params.size(), 2u);
+    EXPECT_EQ(params[0].get_shape(), (std::vector<int64_t>{5, 10, 3, 3}));
+    EXPECT_EQ(params[1].get_shape(), (std::vector<int64_t>{5}));
+
+    EXPECT_EQ(params[0].get_dtype(), Dtype::FLOAT32);
+    EXPECT_EQ(params[1].get_dtype(), Dtype::FLOAT32);
+    EXPECT_EQ(params[0].get_device(), Device::CPU);
+    EXPECT_EQ(params[1].get_device(), Device::CPU);
+    EXPECT_TRUE(params[0].get_requires_grad());
+    EXPECT_TRUE(params[1].get_requires_grad());
+
+    // The specified constructor initializes every bias to zero.
+    EXPECT_EQ(to_vector<float>(params[1]), (std::vector<float>{0, 0, 0, 0, 0}));
+}
+
+TEST_F(Conv2dTest, ParameterCountMatchesFormula) {
+    // Count = out_channels * in_channels * kernel_size^2 + out_channels.
+    {
+        Conv2d conv(/*in_channels=*/3, /*out_channels=*/5,
+                    /*kernel_size=*/3, /*stride=*/1, /*padding=*/0);
+        const std::vector<Tensor> params = conv.parameters();
+        ASSERT_EQ(params.size(), 2u);
+        const size_t actual = params[0].num_elements() + params[1].num_elements();
+        const size_t expected = 5u * 3u * 3u * 3u + 5u;  // 140
+        EXPECT_EQ(actual, expected);
+    }
+
+    {
+        Conv2d conv(/*in_channels=*/2, /*out_channels=*/4,
+                    /*kernel_size=*/1, /*stride=*/2, /*padding=*/1);
+        const std::vector<Tensor> params = conv.parameters();
+        ASSERT_EQ(params.size(), 2u);
+        const size_t actual = params[0].num_elements() + params[1].num_elements();
+        const size_t expected = 4u * 2u * 1u * 1u + 4u;  // 12
+        EXPECT_EQ(actual, expected);
+    }
+}
+
+TEST_F(Conv2dTest, ParametersReturnsWeightAndBiasSharingTheirStorage) {
+    Conv2d conv(/*in_channels=*/2, /*out_channels=*/3,
+                /*kernel_size=*/1, /*stride=*/1, /*padding=*/0);
+
+    const std::vector<Tensor> first = conv.parameters();
+    const std::vector<Tensor> second = conv.parameters();
+
+    ASSERT_EQ(first.size(), 2u);
+    ASSERT_EQ(second.size(), 2u);
+    EXPECT_EQ(first[0].get_shape(), (std::vector<int64_t>{3, 2, 1, 1}));
+    EXPECT_EQ(first[1].get_shape(), (std::vector<int64_t>{3}));
+
+    // Tensor copies should still refer to the layer's learnable parameter storage.
+    EXPECT_EQ(first[0].get_data().get(), second[0].get_data().get());
+    EXPECT_EQ(first[1].get_data().get(), second[1].get_data().get());
+
+    // Verify that modifying the bias through one returned Tensor is visible through
+    // another parameters() result, rather than a detached copy of the bias data.
+    float* bias_values = static_cast<float*>(first[1].get_data()->get_ptr());
+    bias_values[1] = 7.0f;
+    EXPECT_FLOAT_EQ(to_vector<float>(second[1])[1], 7.0f);
+}
+
+TEST_F(Conv2dTest, RejectsZeroInputChannels) {
+    EXPECT_THROW((void)Conv2d(0, 2, 3, 1, 0), std::invalid_argument);
+}
+
+TEST_F(Conv2dTest, RejectsZeroOutputChannels) {
+    EXPECT_THROW((void)Conv2d(2, 0, 3, 1, 0), std::invalid_argument);
+}
+
+TEST_F(Conv2dTest, RejectsZeroKernelSize) {
+    EXPECT_THROW((void)Conv2d(2, 3, 0, 1, 0), std::invalid_argument);
+}
+
+TEST_F(Conv2dTest, RejectsNonPositiveStride) {
+    EXPECT_THROW((void)Conv2d(2, 3, 3, 0, 0), std::invalid_argument);
+    EXPECT_THROW((void)Conv2d(2, 3, 3, -1, 0), std::invalid_argument);
+}
+
+TEST_F(Conv2dTest, RejectsNegativePadding) {
+    EXPECT_THROW((void)Conv2d(2, 3, 3, 1, -1), std::invalid_argument);
+}
+
+TEST_F(Conv2dTest, RejectsUnrepresentableOrOverflowingDimensions) {
+    // The implementation guards tensor dimensions and parameter allocation sizes.
+    // The exact exception may be invalid_argument (dimension cannot be represented)
+    // or overflow_error (a size calculation overflows), depending on platform width.
+    EXPECT_ANY_THROW((void)Conv2d(std::numeric_limits<size_t>::max(), 2, 3, 1, 0));
+}
