@@ -10,12 +10,14 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <limits>
 
 #include "mllib/function.h"
 #include "mllib/embedding.h"
 #include "mllib/conv2d.h"
 #include "mllib/storage.h"
 #include "mllib/tensor.h"
+#include "mllib/layernorm.h"
 
 namespace {
 
@@ -733,4 +735,232 @@ TEST_F(Conv2dTest, RejectsUnrepresentableOrOverflowingDimensions) {
     // The exact exception may be invalid_argument (dimension cannot be represented)
     // or overflow_error (a size calculation overflows), depending on platform width.
     EXPECT_ANY_THROW((void)Conv2d(std::numeric_limits<size_t>::max(), 2, 3, 1, 0));
+}
+
+
+// ---------------------------------------------------------------------------
+// LayerNorm
+// ---------------------------------------------------------------------------
+TEST(LayerNormTest, ParametersHaveCorrectShapesAndInitialValues) {
+    LayerNorm layer(3);
+
+    const std::vector<Tensor> params = layer.parameters();
+
+    ASSERT_EQ(params.size(), 2u);
+
+    EXPECT_EQ(
+        params[0].get_shape(),
+        (std::vector<int64_t>{3})
+    );
+
+    EXPECT_EQ(
+        params[1].get_shape(),
+        (std::vector<int64_t>{3})
+    );
+
+    EXPECT_EQ(
+        to_vector<float>(params[0]),
+        (std::vector<float>{1, 1, 1})
+    );
+
+    EXPECT_EQ(
+        to_vector<float>(params[1]),
+        (std::vector<float>{0, 0, 0})
+    );
+
+    EXPECT_TRUE(params[0].get_requires_grad());
+    EXPECT_TRUE(params[1].get_requires_grad());
+}
+
+
+TEST(LayerNormTest, NormalizesOneVector) {
+    LayerNorm layer(3);
+
+    Tensor x = make_tensor<float>(
+        {1, 2, 3},
+        {3},
+        Dtype::FLOAT32
+    );
+
+    Tensor output = layer.forward(x);
+
+    // Mean = 2
+    // Variance = ((1-2)^2 + (2-2)^2 + (3-2)^2) / 3
+    //          = 2/3
+    //
+    // Standard deviation = sqrt(2/3 + eps)
+    //
+    // The output should be approximately:
+    // {-1.2247, 0, 1.2247}
+
+    ASSERT_EQ(output.get_shape(), (std::vector<int64_t>{3}));
+
+    const std::vector<float> values = to_vector<float>(output);
+
+    ASSERT_EQ(values.size(), 3u);
+
+    EXPECT_NEAR(values[0], -1.2247f, 0.001f);
+    EXPECT_NEAR(values[1], 0.0f, 0.001f);
+    EXPECT_NEAR(values[2], 1.2247f, 0.001f);
+}
+
+
+TEST(LayerNormTest, NormalizesEachRowIndependently) {
+    LayerNorm layer(2);
+
+    Tensor x = make_tensor<float>(
+        {
+            1, 3,
+            2, 6
+        },
+        {2, 2},
+        Dtype::FLOAT32
+    );
+
+    Tensor output = layer.forward(x);
+
+    ASSERT_EQ(
+        output.get_shape(),
+        (std::vector<int64_t>{2, 2})
+    );
+
+    const std::vector<float> values = to_vector<float>(output);
+
+    ASSERT_EQ(values.size(), 4u);
+
+    // First row: [1, 3]
+    EXPECT_NEAR(values[0], -1.0f, 0.001f);
+    EXPECT_NEAR(values[1],  1.0f, 0.001f);
+
+    // Second row: [2, 6]
+    EXPECT_NEAR(values[2], -1.0f, 0.001f);
+    EXPECT_NEAR(values[3],  1.0f, 0.001f);
+}
+
+
+TEST(LayerNormTest, NormalizesLastDimensionOfThreeDimensionalInput) {
+    LayerNorm layer(2);
+
+    Tensor x = make_tensor<float>(
+        {
+            1, 3,
+            2, 6,
+
+            4, 8,
+            5, 9
+        },
+        {2, 2, 2},
+        Dtype::FLOAT32
+    );
+
+    Tensor output = layer.forward(x);
+
+    EXPECT_EQ(
+        output.get_shape(),
+        (std::vector<int64_t>{2, 2, 2})
+    );
+
+    const std::vector<float> values = to_vector<float>(output);
+
+    ASSERT_EQ(values.size(), 8u);
+
+    for (size_t i = 0; i < values.size(); i += 2) {
+        EXPECT_NEAR(values[i],     -1.0f, 0.001f);
+        EXPECT_NEAR(values[i + 1],  1.0f, 0.001f);
+    }
+}
+
+
+TEST(LayerNormTest, SupportsFloat64Input) {
+    LayerNorm layer(3);
+
+    Tensor x = make_tensor<double>(
+        {1.0, 2.0, 3.0},
+        {3},
+        Dtype::FLOAT64
+    );
+
+    Tensor output = layer.forward(x);
+
+    EXPECT_EQ(output.get_dtype(), Dtype::FLOAT64);
+
+    const std::vector<double> values = to_vector<double>(output);
+
+    EXPECT_NEAR(values[0], -1.2247, 0.001);
+    EXPECT_NEAR(values[1],  0.0,    0.001);
+    EXPECT_NEAR(values[2],  1.2247, 0.001);
+}
+
+
+TEST(LayerNormTest, ConstantInputDoesNotDivideByZero) {
+    LayerNorm layer(3);
+
+    Tensor x = make_tensor<float>(
+        {5, 5, 5},
+        {3},
+        Dtype::FLOAT32
+    );
+
+    Tensor output = layer.forward(x);
+
+    const std::vector<float> values = to_vector<float>(output);
+
+    for (float value : values) {
+        EXPECT_TRUE(std::isfinite(value));
+        EXPECT_NEAR(value, 0.0f, 0.001f);
+    }
+}
+
+
+TEST(LayerNormTest, RejectsZeroDimension) {
+    EXPECT_THROW(LayerNorm(0), std::invalid_argument);
+}
+
+
+TEST(LayerNormTest, RejectsInvalidEpsilon) {
+    EXPECT_THROW(LayerNorm(3, 0.0), std::invalid_argument);
+    EXPECT_THROW(LayerNorm(3, -0.1), std::invalid_argument);
+    EXPECT_THROW(
+        LayerNorm(3, std::numeric_limits<double>::quiet_NaN()),
+        std::invalid_argument
+    );
+}
+
+
+TEST(LayerNormTest, RejectsInputWithIncorrectLastDimension) {
+    LayerNorm layer(3);
+
+    Tensor x = make_tensor<float>(
+        {1, 2, 3, 4},
+        {2, 2},
+        Dtype::FLOAT32
+    );
+
+    EXPECT_THROW(layer.forward(x), std::invalid_argument);
+}
+
+
+TEST(LayerNormTest, RejectsIntegerInput) {
+    LayerNorm layer(3);
+
+    Tensor x = make_tensor<int32_t>(
+        {1, 2, 3},
+        {3},
+        Dtype::INT32
+    );
+
+    EXPECT_THROW(layer.forward(x), std::invalid_argument);
+}
+
+
+TEST(LayerNormTest, RejectsScalarInput) {
+    LayerNorm layer(1);
+
+    Tensor x = make_tensor<float>(
+        {5},
+        {},
+        Dtype::FLOAT32
+    );
+
+    EXPECT_THROW(layer.forward(x), std::invalid_argument);
 }
