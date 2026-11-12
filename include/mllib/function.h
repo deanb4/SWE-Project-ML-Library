@@ -12,10 +12,14 @@
 class Function {
 	private:
 		std::string op_type;
-		std::shared_ptr<Tensor> inputs;
+		std::vector<std::shared_ptr<Tensor>> inputs;
 		std::shared_ptr<Tensor> saved_tensors;
+        std::vector<int> saved_dims; // for dims backwwards
+
 	public:
-        Function(std::string op_type, std::shared_ptr<Tensor> inputs, std::shared_ptr<Tensor> saved_tensors);
+        Function(std::string op_type, std::vector<std::shared_ptr<Tensor>> inputs,
+             std::shared_ptr<Tensor> saved_tensors, std::vector<int> save_dims = {});
+        const std::vector<std::shared_ptr<Tensor>>& get_inputs() const;
 		Tensor add(const Tensor& a, const Tensor& b); 
 		Tensor sub(const Tensor& a, const Tensor& b);
 		Tensor mul(const Tensor& a, const Tensor& b);
@@ -38,5 +42,6 @@ class Function {
         Tensor transpose(const Tensor& a, int dim0, int dim1);
         std::vector<Tensor> backward(const Tensor& grad_output);
 };
+
 #endif
 

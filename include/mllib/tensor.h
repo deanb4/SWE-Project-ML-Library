@@ -24,12 +24,21 @@ class Tensor {
         std::vector<int64_t> shape;
         bool requires_grad;
         std::shared_ptr<Function> grad_fn; // need to create class
-        std::shared_ptr<Tensor> grad;
+
+        // every copy of a tensor shares one GradSlot, so a grad written through 
+        // any copy (like the ones the graph keeps) show up on all of them
+        struct GradSlot { 
+            std::shared_ptr<Tensor> grad;
+        };
+        std::shared_ptr<GradSlot> grad_slot;
 
     public:
         // constructor
         Tensor(std::shared_ptr<Storage> data, std::vector<int64_t> shape,
                 Device device = Device::CPU, bool requires_grad = false, Dtype dtype = Dtype::FLOAT32);
+
+        // new tensor with every element set to value (FLOAT32 / FLAOT64 only)
+        static Tensor full(const std::vector<int64_t>& shape, double value, Dtype dtype);
         
         // backward
         void backward();

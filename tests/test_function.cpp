@@ -70,7 +70,7 @@ std::string error_message(Fn fn) {
 // The ops are non-static members, so every test needs a Function instance to call them on.
 class FunctionTest : public ::testing::Test {
     protected:
-        Function F{"test", nullptr, nullptr};
+        Function F{"test", {}, nullptr};
 };
 
 // Aliases so the output reads "Add.Float32Values" rather than "FunctionTest.AddFloat32Values"

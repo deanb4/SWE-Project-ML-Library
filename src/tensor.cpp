@@ -4,7 +4,8 @@
 
 Tensor::Tensor(std::shared_ptr<Storage> data, std::vector<int64_t> shape,
                 Device device, bool requires_grad, Dtype dtype) :
-                data(std::move(data)), shape(std::move(shape)), device(device), requires_grad(requires_grad), dtype(dtype) {
+                data(std::move(data)), shape(std::move(shape)), device(device), requires_grad(requires_grad), dtype(dtype),
+                grad_slot(std::make_shared<GradSlot>()) {
     // Error checking
 
     // Check data 
@@ -24,6 +25,31 @@ Tensor::Tensor(std::shared_ptr<Storage> data, std::vector<int64_t> shape,
         }
     }
 
+}
+
+Tensor Tensor::full(const std::vector<int64_t>& shape, double value, Dtype dtype) {
+    size_t n = 1;
+    for (int64_t dim : shape) {
+        n *= static_cast<size_t>(dim);
+    }
+
+    auto storage = std::make_shared<Storage>(n * dtype_size(dtype), Device::CPU);
+    
+    if (dtype == Dtype::FLOAT32) {
+        float* out = static_cast<float*>(storage->get_ptr());
+        for (size_t i = 0; i < n; i++) {
+            out[i] = static_cast<float>(value);
+        }
+    } else if (dtype == Dtype::FLOAT64) {
+        double* out = static_cast<double*>(storage->get_ptr());
+        for (size_t i = 0; i < n; i++) {
+            out[i] = value;
+        }
+    } else {
+        throw std::runtime_error("Tensor::full: only FLOAT32 and FLOAT64 are supported.");
+    }
+
+    return Tensor(storage, shape, Device::CPU, false, dtype);
 }
 
 
@@ -49,8 +75,6 @@ void Tensor::backward() {
     std::shared_ptr<Tensor> root = std::make_shared<Tensor>(*this);
     Autograd::backward(root);
 
-    // autograd seeded the copy's grad, keep it on this tensor too
-    grad = root->get_grad();
 }
 
 Tensor Tensor::to(Device target_device) const {
@@ -89,11 +113,11 @@ void Tensor::set_requires_grad(bool value) {
 }
 
 std::shared_ptr<Tensor> Tensor::get_grad() const{
-    return grad;
+    return grad_slot->grad;
 }
 
 void Tensor::set_grad(std::shared_ptr<Tensor>& value) {
-    grad = std::move(value);
+    grad_slot->grad = std::move(value);
 }
 
 std::shared_ptr<Function> Tensor::get_grad_fn() const {

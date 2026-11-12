@@ -40,6 +40,14 @@ ctest only runs the test program that already exists. If you skip the build step
 or the build fails, you're testing the OLD code. Always check the build finished
 with no errors before trusting the results.
 
+IF TESTS CRASH AFTER YOU PULL
+-----------------------------
+If someone changed a header (e.g. tensor.h) and tests suddenly crash with
+"SEH exception with code 0xc0000005", Visual Studio reused old compiled files.
+Rebuild everything once:
+       cmake --build build --config Debug --clean-first
+Then build normally again after that.
+
 
 READING THE RESULTS
 -------------------

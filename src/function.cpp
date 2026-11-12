@@ -1,5 +1,7 @@
 // functions
 #include "mllib/function.h"
+#include "mllib/autograd.h"
+#include <cstring>
 #include <stdexcept>
 
 
@@ -60,7 +62,33 @@ namespace {
         }
     }
 
+    // Builds the graph: remembers which op made "out" and from which inputs, so
+    // backward can walk from out back to them. Skipped when no grad is needed.
+    void record(Tensor& out, const std::string& op_type, const std::vector<Tensor>& inputs,
+                std::vector<int> saved_dims = {}) {
+                    
+        if (!out.get_requires_grad() || !Autograd::is_grad_enabled()) {
+            return;
+        }
 
+        std::vector<std::shared_ptr<Tensor>> input_ptrs;
+        for (const Tensor& input : inputs) {
+            input_ptrs.push_back(std::make_shared<Tensor>(input));
+        }
+        out.set_grad_fn(std::make_shared<Function>(op_type, input_ptrs, nullptr, saved_dims));
+    }
+
+    // The value of a one-element float tensor (the grad of sum and mean's output)
+    double scalar_value(const Tensor& t) {
+        if (t.get_dtype() == Dtype::FLOAT32) {
+            return *static_cast<const float*>(t.get_data()->get_ptr());
+        }
+        if (t.get_dtype() == Dtype::FLOAT64) {
+            return *static_cast<const double*>(t.get_data()->get_ptr());
+        }
+        throw std::runtime_error("backward: only float tensors have gradients");
+    }
+    
 
     template<typename Op>
     Tensor binary_op(const Tensor& a, const Tensor& b, const std::string& name, Op op) {
@@ -116,15 +144,22 @@ namespace {
 
         bool requires_grad = a.get_requires_grad() || b.get_requires_grad();
 
-        return Tensor(out_storage, a.get_shape(), Device::CPU, requires_grad, dtype);
+        Tensor out(out_storage, a.get_shape(), Device::CPU, requires_grad, dtype);
+        record(out, name, {a,b});
+        return out;
     }
 
 }
 
 
-Function::Function(std::string op_type, std::shared_ptr<Tensor> inputs, std::shared_ptr<Tensor> saved_tensors) :
-                    op_type(op_type) , inputs(inputs), saved_tensors(saved_tensors) {}
+Function::Function(std::string op_type, std::vector<std::shared_ptr<Tensor>> inputs, 
+                    std::shared_ptr<Tensor> saved_tensors, std::vector<int> saved_dims) :
+                    op_type(op_type), inputs(inputs), 
+                    saved_tensors(saved_tensors), saved_dims(saved_dims) {}
 
+const std::vector<std::shared_ptr<Tensor>>& Function::get_inputs() const {
+    return inputs;
+}
 
 Tensor Function::add(const Tensor& a, const Tensor& b) {
    return binary_op(a, b, "add", [](auto x, auto y) { return x + y; });
@@ -202,7 +237,9 @@ Tensor Function::matmul(const Tensor& a, const Tensor& b) {
 
         bool requires_grad = a.get_requires_grad() || b.get_requires_grad();
 
-        return Tensor(out_storage, {a_shape[0],b_shape[1]}, Device::CPU, requires_grad, dtype);
+        Tensor out(out_storage, {a_shape[0],b_shape[1]}, Device::CPU, requires_grad, dtype);
+        record(out, "matmul", {a, b});
+        return out;
 }
 
 
@@ -247,7 +284,9 @@ Tensor Function::sum(const Tensor& a) {
 
     bool requires_grad = a.get_requires_grad();
 
-    return Tensor(out_storage, {1}, Device::CPU, requires_grad, dtype);
+    Tensor out(out_storage, {1}, Device::CPU, requires_grad, dtype);
+    record(out, "sum", {a});
+    return out;
 
 }
 
@@ -297,7 +336,10 @@ Tensor Function::mean(const Tensor& a) {
     }
 
     bool requires_grad = a.get_requires_grad();
-    return Tensor(out_storage, {1}, Device::CPU, requires_grad, dtype);
+    Tensor out(out_storage, {1}, Device::CPU, requires_grad, dtype);
+    record(out, "mean", {a});
+    return out;
+
 }
 
 
@@ -332,25 +374,127 @@ Tensor Function::reshape(const Tensor& a, const std::vector<int64_t>& shape) {
             throw std::runtime_error("reshape: cannot infer -1 when antoher dimension is 0");
         }
 
+        new_shape[infer_idx] = num_elements / known;
+
         if (num_elements % known != 0) {
             throw std::runtime_error("reshape: shape is invalid for input of size" + 
                                     std::to_string(num_elements));
         }
+
+
     } else if (known != num_elements) {
         throw std::runtime_error("reshape: shape is invalid for input of size " + std::to_string(num_elements));
     }
 
     // return tensor
-    return Tensor(a.get_data(), new_shape, a.get_device(), 
+    Tensor out(a.get_data(), new_shape, a.get_device(), 
                   a.get_requires_grad(), a.get_dtype());
+
+    // to build graph to be used for back propagation
+    record(out, "reshape", {a});
+
+    return out;
 }
 
 Tensor Function::transpose(const Tensor& a, int dim0, int dim1) {
+    const std::vector<int64_t>& shape = a.get_shape();
+    int ndim = static_cast<int>(shape.size());
 
+    // negative dims count from the end 
+    if (dim0 < 0) {
+        dim0 += ndim;
+    }
+    if (dim1 < 0) {
+        dim1 += ndim;
+    }
+    if (dim0 < 0 || dim0 >= ndim || dim1 < 0 || dim1 >= ndim) {
+        throw std::runtime_error("transpose: dim out of range");
+    }
+    
+    std::vector<int64_t> out_shape = shape;
+    std::swap(out_shape[dim0], out_shape[dim1]); 
+
+    // strides[d] = how far apart (in elements) two neighbors along dim d are in the tensor
+    std::vector<size_t> strides(ndim);
+    size_t stride = 1;
+    for (int d = ndim -1; d >= 0; d--) {
+        strides[d] = stride;
+        stride *= static_cast<size_t>(shape[d]);
+    }
+
+    std::swap(strides[dim0], strides[dim1]);
+
+    size_t n = a.num_elements();
+    size_t elem_size = dtype_size(a.get_dtype());
+    auto out_storage = std::make_shared<Storage>(n * elem_size, Device::CPU);
+    const char* src = static_cast<const char*>(a.get_data()->get_ptr());
+    char* dst = static_cast<char*>(out_storage->get_ptr());
+
+    for (size_t i = 0; i < n; i++) {
+        // split output index i into position along each dim
+        size_t rest = i;
+        size_t src_index = 0;
+        for (int d = ndim -1; d >=0; d--) {
+            size_t dim_size = static_cast<size_t>(out_shape[d]);
+            src_index += (rest % dim_size) * strides[d];
+            rest /= dim_size;
+        }
+
+        // copy the elemtne's bytes, so every dtype works without a switch
+        std::memcpy(dst + i * elem_size, src + src_index * elem_size, elem_size);
+    }
+
+    Tensor out(out_storage, out_shape, Device::CPU, a.get_requires_grad(), a.get_dtype());
+    record(out, "transpose", {a}, {dim0, dim1});
+    return out;
 }
 
+// Given the gradient of the loss w.r.t. this op's output, returns the gradient
+// w.r.t each input (same order as inputs)
 std::vector<Tensor> Function::backward(const Tensor& grad_output) {
+    const Tensor& g = grad_output;
+    const Tensor& a = *inputs[0];
 
+    if (op_type == "add") {
+        return {g, g};
+    }
+    if (op_type == "sub") {
+        Tensor zeros = Tensor::full(g.get_shape(), 0.0, g.get_dtype());
+        return {g, sub(zeros,g)};
+    }
+    if (op_type == "mul") {
+        const Tensor& b = *inputs[1];
+        return {mul(g,b), mul(g,a)};
+    }
+    if (op_type == "div") {
+        // d(a/b)/da = 1/b, d(ab)/db = -a/b^2
+        const Tensor&b = *inputs[1];
+        Tensor zeros = Tensor::full(b.get_shape(), 0.0, b.get_dtype());
+        return {div(g,b), sub(zeros, div(mul(g,a), mul(b,b)))};
+    }
+    if (op_type == "matmul") {
+        // out = a @ b | d/da = g@ b^T, d/db == a^T @ g
+        const Tensor& b = *inputs[1];
+        return {matmul(g, transpose(b,0,1)), matmul(transpose(a,0,1),g)};
+    }
+    if (op_type == "sum") {
+        // every element adds to get the sum once, so each one gets g
+        return {Tensor::full(a.get_shape(), scalar_value(g), a.get_dtype())};
+    }
+    if (op_type == "mean") {
+        // every element adds 1/N of itself to the mean
+        double value = scalar_value(g) / static_cast<double>(a.num_elements());
+        return {Tensor::full(a.get_shape(), value, a.get_dtype())};
+    }
+    if (op_type == "reshape") {
+        return {reshape(g, a.get_shape())};
+    }
+    if (op_type == "transpose") {
+        // swapping the same two dims again undoes it
+        return {transpose(g, saved_dims[0], saved_dims[1])};
+    }
+
+    throw std::runtime_error("backward not implemented for " + op_type);
 }
 
 //   Tensor reshape(const Tensor& a, const std::vector<int>& shape);
