@@ -36,6 +36,7 @@ class Function {
         Tensor relu(const Tensor& a);
         Tensor sigmoid(const Tensor& a);
         Tensor softmax(const Tensor& a, int dim);
+        Tensor cross_entropy(const Tensor& logits, const Tensor& targets);
         // Josh ********************************
 
         Tensor reshape(const Tensor& a, const std::vector<int64_t>& shape);

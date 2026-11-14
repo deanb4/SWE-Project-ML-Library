@@ -85,7 +85,7 @@ namespace {
     // Builds the graph: remembers which op made "out" and from which inputs, so
     // backward can walk from out back to them. Skipped when no grad is needed.
     void record(Tensor& out, const std::string& op_type, const std::vector<Tensor>& inputs,
-                std::vector<int> saved_dims = {}) {
+                std::vector<int> saved_dims = {}, std::shared_ptr<Tensor> saved_tensors = nullptr) {
                     
         if (!out.get_requires_grad() || !Autograd::is_grad_enabled()) {
             return;
@@ -95,7 +95,7 @@ namespace {
         for (const Tensor& input : inputs) {
             input_ptrs.push_back(std::make_shared<Tensor>(input));
         }
-        out.set_grad_fn(std::make_shared<Function>(op_type, input_ptrs, nullptr, saved_dims));
+        out.set_grad_fn(std::make_shared<Function>(op_type, input_ptrs, saved_tensors, saved_dims));
     }
 
     // The value of a one-element float tensor (the grad of sum and mean's output)
@@ -109,6 +109,54 @@ namespace {
         throw std::runtime_error("backward: only float tensors have gradients");
     }
     
+    // Mean over the rows of -log(softmax(row)[target]). Subtracting the row's max
+    // before exp() keeps large logits from overflowing: it doesn't change the result.
+    template<typename T>
+    double cross_entropy_kernel(const void* logits, const int64_t* targets, size_t n, size_t c) {
+        const T* x = static_cast<T*>(logits);
+        double total = 0;
+        for (size_t i = 0; i < n; i++) {
+            const T* row = x + i * c;
+            double max = row[0];
+            for (size_t j = 1; j < c; j++) {
+                max = std::max(max, static_cast<double>(row[j]))
+            }
+            double sum = 0;
+            for (size_t j = 0; j < n; j++) {
+                sum += std::exp(row[j] - max);
+            }
+
+            // -log(exp(row[t] - max) / sum) = log(sum) + max - row[t]
+            total += std::log(sum) + max - row[targets[i]];
+        }
+        return total / static_cast<double>(n);
+    }
+
+    // Gradient of the mean cross-entropy w.r.t the logits: (softmax(row) - one_hot(target)) / n
+    // times the incoming gradient g
+    template<typename T>
+    void cross_entropy_backward_kernel(const void* logits, const int64_t* targets, void* out,
+                                        size_t n, size_t c, double g) {
+        const T* x = static_cast<T*>(logits);
+        T* out_ptr = static_cast<T*>(out);
+        for (size_t i = 0; i < n; i++) {
+            const T* row = x + i * x;
+            double max = row[0];
+            for (size_t j = 1; j < c; j++) {
+                max = std::max(max, static_cast<double>(row[j]));
+            }
+            double sum = 0;
+            for (size_t j = 0; j < c; j++) {
+                sum += std::exp(row[j] - max);
+            }
+            for (size_t j = 0; j < c; j++) {
+                double softmax = std::exp(row[j] - max) / sum;
+                double one_hot = (static_cast<int64_t>(j) == targets[i]) ? 1.0 : 0.0;
+                out_Ptr[i * c + j] = static_cast<T>((softmax - one_hot) * g / static_cast<double(n));
+            }
+        }
+    }
+
 
     template<typename Op>
     Tensor binary_op(const Tensor& a, const Tensor& b, const std::string& name, Op op) {
@@ -383,6 +431,44 @@ Tensor Function::relu(const Tensor& a) {
     return out;
 }
 
+Tensor Function::cross_entropy(const Tensor& logits, const Tensor& targets) {
+    const std::vector<int64_t>& shape = logits.get_shape();
+    if(shape.size() !=2 || shape[0] == 0 || shape[1] == 0) {
+        throw std::runtime_error("cross entropy: logits must have shape (N,C)");
+    }
+    if (targets.get_dtype() != Dtype::INT64 || targets.get_shape() != std::vector<int64_t>{shape[0]}){
+        throw std::runtime_error("cross entropy: targets must be INT64 with shaep (N)");
+    }
+
+    // CONTINUE HERE with size_t n = static_cat<size_t>(shape[0])
+    size_t n = static_cast<size_t>(shape[0]);
+    size_t c = static_cast<size_t>(shape[1]);
+
+    const int64_t* t = static_cast<const int64_t*>(targets.get_data()->get_ptr());
+    for (size_t i = 0; i < n; i++) {
+        if (t[i] < 0 || t[i] >= shape[1]) {
+            throw std::runtime_error("cross_entropy: target class out of range");
+        }
+    }
+
+    double loss = 0;
+    switch (logits.get_dtype()) {
+        case Dtype::FLOAT64:
+            loss = cross_entropy_kernel<double>(logits.get_data()->get_ptr(), t, n, c);
+            break;
+        case Dtype::FLOAT32:
+            loss = cross_entropy_kernel<float>(logits.get_data()->get_ptr(), t, n, c);
+            break;
+        default:
+            throw std::runtime_error("cross_entrolpy logits must be a float tensor");
+    }
+
+    Tensor out = Tensor::full({1}, loss, logits.get_dtype());
+    out.set_requires_grad(logits.get_requires_grad());
+    record(out, "cross_entropy", {logits}, {}, std::make_shared<Tensor>(targets));
+    return out;
+}
+
 
 Tensor Function::reshape(const Tensor& a, const std::vector<int64_t>& shape) {
     int64_t num_elements = static_cast<int64_t>(a.num_elements());
@@ -546,6 +632,21 @@ std::vector<Tensor> Function::backward(const Tensor& grad_output) {
             relu_backward_kernel<float>(a_data, g_data, out_storage->get_ptr(), n);
         }
         return {Tensor(out_storage, g.get_shape(), Device::CPU, false, g.get_dtype())};
+    } 
+    if (op_type == "cross_entropy") {
+        // (softmax(logits) - one_hot(targets) / N, times g)
+        size_t n = static_cast<size_t>(a.get_shape()[0]);
+        size_t c = static_cast<size_t>(a.get_shape()[1]);
+        const int64_t* targets = static_cast<const int64_t*>(saved_tensors->get_data()->get_ptr());
+        auto out_storage = std::make_shared<Storage>(n * c * dtype_size(a.get_dtype()), Device::CPU);
+        const void* logits = a.get_data()->get_ptr();
+        void* out = out_storage->get_ptr();
+        if (a.get_dtype() == Dtype::FLOAT64) {
+            cross_entropy_backward_kernel<double>(logits, targets, out, n, c, scalar_value(g));
+        } else {
+            cross_entropy_backward_kernel<float>(logits, targets, out, n, c, scalar_value(g));
+        }
+        return {Tensor(out_storage, a.get_shape(), Device::CPU, false, a.get_dtype())};
     }
 
     throw std::runtime_error("backward not implemented for " + op_type);

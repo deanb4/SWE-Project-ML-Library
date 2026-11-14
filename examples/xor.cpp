@@ -18,7 +18,7 @@ Tensor make_tensor(const std::vector<float>& values, std::vector<int64_t> shape)
 }
 
 int main() {
-    Function F("trainh", {}, nullptr);
+    Function F("train", {}, nullptr);
 
     // every XOR input, one per row, and the answer for each
     Tensor x = make_tensor({0,0,

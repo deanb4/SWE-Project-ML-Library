@@ -45,7 +45,7 @@ Tensor Linear::forward(const Tensor& x) const {
     int64_t n = x.get_shape()[0];
     Tensor ones = Tensor::full({n, 1}, 1.0, Dtype::FLOAT32);
 
-    return F.add(F.matmul(x, weight), F.matmul(ones, bias));
+    return F.add(F.matmul(x, weight), F.matmul(ones, bias)); // WHY matmul ones and bias? *********
 }
 
 std::vector<Tensor> Linear::parameters() const {
