@@ -20,7 +20,12 @@ set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
 
 enable_testing()
-add_executable(test_function tests/test_function.cpp tests/test_autograd.cpp)
+add_executable(test_function tests/test_function.cpp tests/test_autograd.cpp tests/test_nn.cpp)
 target_link_libraries(test_function PRIVATE mllib GTest::gtest_main)
 include(GoogleTest)
 gtest_discover_tests(test_function)
+
+
+# Example programs
+add_executable(xor examples/xor.cpp)
+target_link_libraries(xor PRIVATE mllib)

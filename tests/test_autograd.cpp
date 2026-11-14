@@ -415,3 +415,8 @@ TEST(GradCheck, ChainWithReusedIntermediate) {
         {random_tensor({6}, -2, 2, 15), random_tensor({3, 2}, -2, 2, 16),
          random_tensor({2, 2}, -2, 2, 17)});
 }
+
+TEST(GradCheck, Relu) {
+    expect_gradients_match([](const std::vector<Tensor>& in) { return F.relu(in[0]); },
+                           {random_tensor({2, 3}, -2, 2, 18)});
+}

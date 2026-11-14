@@ -62,6 +62,26 @@ namespace {
         }
     }
 
+    template<typename T>
+    void relu_kernel(const void* a, void* out, size_t n) {
+        const T* a_ptr = static_cast<const T*>(a);
+        T* out_ptr = static_cast<T*>(out);
+        for (size_t i = 0; i < n; i++) {
+            out_ptr[i] = a_ptr[i] > 0 ? a_ptr[i] : static_cast<T>(0);
+        }
+    }
+
+    // relu's gradient: g passes through wehre the input was positive, 0 elsewehre
+    template<typename T>
+    void relu_backward_kernel(const void* a, const void* g, void* out, size_t n) {
+        const T* a_ptr = static_cast<const T*>(a);
+        const T* g_ptr = static_cast<const T*>(g);
+        T* out_ptr = static_cast<T*>(out);
+        for (size_t i = 0; i < n; i++) {
+            out_ptr[i] = a_ptr[i] > 0 ? g_ptr[i] : static_cast<T>(0);
+        }
+    }
+
     // Builds the graph: remembers which op made "out" and from which inputs, so
     // backward can walk from out back to them. Skipped when no grad is needed.
     void record(Tensor& out, const std::string& op_type, const std::vector<Tensor>& inputs,
@@ -342,6 +362,27 @@ Tensor Function::mean(const Tensor& a) {
 
 }
 
+Tensor Function::relu(const Tensor& a) {
+    Dtype dtype = a.get_dtype();
+    size_t n = a.num_elements();
+    auto out_storage = std::make_shared<Storage>(n * dtype_size(dtype), Device::CPU);
+
+    switch (dtype) {
+        case Dtype::FLOAT64:
+            relu_kernel<double>(a.get_data()->get_ptr(), out_storage->get_ptr(), n);
+            break;
+        case Dtype::FLOAT32:
+            relu_kernel<float>(a.get_data()->get_ptr(), out_storage->get_ptr(), n);
+            break;
+        default: 
+            throw std::runtime_error("relu: only float tensors are supported");
+    }
+
+    Tensor out(out_storage, a.get_shape(), Device::CPU, a.get_requires_grad(), dtype);
+    record(out, "relu", {a});
+    return out;
+}
+
 
 Tensor Function::reshape(const Tensor& a, const std::vector<int64_t>& shape) {
     int64_t num_elements = static_cast<int64_t>(a.num_elements());
@@ -493,9 +534,23 @@ std::vector<Tensor> Function::backward(const Tensor& grad_output) {
         // swapping the same two dims again undoes it
         return {transpose(g, saved_dims[0], saved_dims[1])};
     }
+    if (op_type == "relu") {
+        // g passes through where a was positive, 0 elsewhere
+        size_t n = g.num_elements();
+        auto out_storage = std::make_shared<Storage>(n * dtype_size(g.get_dtype()), Device::CPU);
+        const void* a_data = a.get_data()->get_ptr();
+        const void* g_data = g.get_data()->get_ptr();
+        if (g.get_dtype() == Dtype::FLOAT64) {
+            relu_backward_kernel<double>(a_data, g_data, out_storage->get_ptr(), n);
+        } else {
+            relu_backward_kernel<float>(a_data, g_data, out_storage->get_ptr(), n);
+        }
+        return {Tensor(out_storage, g.get_shape(), Device::CPU, false, g.get_dtype())};
+    }
 
     throw std::runtime_error("backward not implemented for " + op_type);
 }
+
 
 //   Tensor reshape(const Tensor& a, const std::vector<int>& shape);
 //         Tensor transpose(const Tensor& a, int dim0, int dim1);
