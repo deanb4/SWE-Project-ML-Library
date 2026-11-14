@@ -9,7 +9,8 @@
 
 /**
  * @brief Loads image files (IDX format, e.g. train-images-idx3-ubyte).
- * @return FLOAT32 tensor of shape (N, image_height * image_width), one image per row, pixels normalized to 0-1.
+ * @return FLOAT32 tensor of shape (N, image_height * image_width * channels), one image per row, 
+ *         pixels normalized to 0-1.
  * @throws std::runtime_error If the file can't be opened.
  */
 Tensor load_images(const std::string& path);
