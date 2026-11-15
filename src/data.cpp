@@ -67,7 +67,7 @@ Tensor load_images(const std::string& path) {
     for(size_t i = 0; i < num_dimensions; ++i) {
         dimensions[i] = read_big_endian_uint32(file, "dimension " + std::to_string(i));
 
-        if(dimensions[i] = 0) {
+        if(dimensions[i] == 0) {
             throw std::runtime_error("load_images: IDX file contains a zero-sized dimension");
         }
     }
@@ -126,7 +126,7 @@ Tensor load_images(const std::string& path) {
     float* output = static_cast<float*>(storage->get_ptr());
 
     //Normalize pixel values
-    for(size_t i; i < total_values; ++i) {
+    for(size_t i = 0; i < total_values; ++i) {
         output[i] = static_cast<float>(raw_pixels[i]) / 255.0f;
     }
 
@@ -152,7 +152,7 @@ Tensor load_labels(const std::string& path) {
 
     unsigned char magic[4];
     file.read(reinterpret_cast<char*>(magic),4);
-    if (!file.gcount() != 4) {
+    if (file.gcount() != 4) {
         throw std::runtime_error("Error with magic header");
     }
     if (magic[0] != 0 || magic[1] != 0 || magic[2] != 0x08 || magic[3] != 1) {

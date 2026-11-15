@@ -29,3 +29,6 @@ gtest_discover_tests(test_function)
 # Example programs
 add_executable(xor examples/xor.cpp)
 target_link_libraries(xor PRIVATE mllib)
+
+add_executable(mnist_mlp examples/mnist_mlp.cpp)
+target_link_libraries(mnist_mlp PRIVATE mllib)

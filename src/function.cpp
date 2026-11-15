@@ -3,6 +3,8 @@
 #include "mllib/autograd.h"
 #include <cstring>
 #include <stdexcept>
+#include <algorithm>
+#include <cmath>
 
 
 // Anonymous namespace for Helper functions
@@ -139,16 +141,16 @@ namespace {
     // before exp() keeps large logits from overflowing: it doesn't change the result.
     template<typename T>
     double cross_entropy_kernel(const void* logits, const int64_t* targets, size_t n, size_t c) {
-        const T* x = static_cast<T*>(logits);
+        const T* x = static_cast<const T*>(logits);
         double total = 0;
         for (size_t i = 0; i < n; i++) {
             const T* row = x + i * c;
             double max = row[0];
             for (size_t j = 1; j < c; j++) {
-                max = std::max(max, static_cast<double>(row[j]))
+                max = std::max(max, static_cast<double>(row[j]));
             }
             double sum = 0;
-            for (size_t j = 0; j < n; j++) {
+            for (size_t j = 0; j < c; j++) {
                 sum += std::exp(row[j] - max);
             }
 
@@ -163,10 +165,10 @@ namespace {
     template<typename T>
     void cross_entropy_backward_kernel(const void* logits, const int64_t* targets, void* out,
                                         size_t n, size_t c, double g) {
-        const T* x = static_cast<T*>(logits);
+        const T* x = static_cast<const T*>(logits);
         T* out_ptr = static_cast<T*>(out);
         for (size_t i = 0; i < n; i++) {
-            const T* row = x + i * x;
+            const T* row = x + i * c;
             double max = row[0];
             for (size_t j = 1; j < c; j++) {
                 max = std::max(max, static_cast<double>(row[j]));
@@ -178,7 +180,7 @@ namespace {
             for (size_t j = 0; j < c; j++) {
                 double softmax = std::exp(row[j] - max) / sum;
                 double one_hot = (static_cast<int64_t>(j) == targets[i]) ? 1.0 : 0.0;
-                out_Ptr[i * c + j] = static_cast<T>((softmax - one_hot) * g / static_cast<double(n));
+                out_ptr[i * c + j] = static_cast<T>((softmax - one_hot) * g / static_cast<double>(n));
             }
         }
     }
