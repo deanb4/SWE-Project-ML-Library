@@ -31,24 +31,50 @@ namespace {
         out_ptr[0] = static_cast<T>(sum);
     }
 
+    // template<typename T>
+    // void matmul_kernel(const void* a, const void* b, void* out, size_t M, size_t K, size_t N) {
+    //     // multiply row by column (dot product) 
+    //     const T* a_ptr = static_cast<const T*>(a);
+    //     const T* b_ptr = static_cast<const T*>(b);
+    //     T* out_ptr = static_cast<T*>(out);
+        
+    //     // matrix multiplication
+    //     for (size_t i = 0; i < M; ++i) {
+    //         for (size_t j = 0; j < N; ++j) {
+    //             T sum = 0;
+    //             for (size_t k = 0; k < K; ++k) {
+    //                 sum += a_ptr[i * K + k] * b_ptr[k * N + j];
+    //             }
+    //             out_ptr[i * N + j] = sum;
+    //         }
+    //     }
+ 
+    // }
+
+    // ** TAKE NOTE: CHANGED TO TAKE ADVANTAGE OF SIMD (SINGLE INSTRUCTION MULTIPLE DATA)
     template<typename T>
     void matmul_kernel(const void* a, const void* b, void* out, size_t M, size_t K, size_t N) {
-        // multiply row by column (dot product) 
         const T* a_ptr = static_cast<const T*>(a);
         const T* b_ptr = static_cast<const T*>(b);
         T* out_ptr = static_cast<T*>(out);
-        
-        // matrix multiplication
+
+        // out accumulates across k, so it must start at zero
+        for (size_t i = 0; i < M * N; ++i) {
+            out_ptr[i] = 0;
+        }
+
+        // loop order i, k, j: the inner loop walks b and out along a row (contiguous memory),
+        // so every cache line is fully used and the compiler can vectorize it
         for (size_t i = 0; i < M; ++i) {
-            for (size_t j = 0; j < N; ++j) {
-                T sum = 0;
-                for (size_t k = 0; k < K; ++k) {
-                    sum += a_ptr[i * K + k] * b_ptr[k * N + j];
+            for (size_t k = 0; k < K; ++k) {
+                T a_ik = a_ptr[i * K + k];               // fixed for the whole inner loop
+                const T* b_row = b_ptr + k * N;          // row k of b
+                T* out_row = out_ptr + i * N;            // row i of out
+                for (size_t j = 0; j < N; ++j) {
+                    out_row[j] += a_ik * b_row[j];
                 }
-                out_ptr[i * N + j] = sum;
             }
         }
- 
     }
 
     template<typename T, typename Op>

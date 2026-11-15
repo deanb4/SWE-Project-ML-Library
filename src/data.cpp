@@ -143,3 +143,71 @@ Tensor load_images(const std::string& path) {
     );
 
 }
+
+Tensor load_labels(const std::string& path) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file.is_open()) {
+        throw std::runtime_error("Error openeing file");
+    }
+
+    unsigned char magic[4];
+    file.read(reinterpret_cast<char*>(magic),4);
+    if (!file.gcount() != 4) {
+        throw std::runtime_error("Error with magic header");
+    }
+    if (magic[0] != 0 || magic[1] != 0 || magic[2] != 0x08 || magic[3] != 1) {
+        throw std::runtime_error("Load labels: expected an IDX label file");
+    }
+
+    // only dim is the num of labels
+    const size_t num_labels = read_big_endian_uint32(file, "number of labels");
+
+    // read label data, one unsigned byte per label
+    std::vector<uint8_t> raw_labels(num_labels);
+    file.read(reinterpret_cast<char*>(raw_labels.data()), static_cast<std::streamsize>(raw_labels.size()));
+
+    if (file.gcount() != static_cast<std::streamsize>(raw_labels.size())) {
+        throw std::runtime_error("load labels: IDX file does not contain enough label data");
+    }
+
+    // reject unexpected extra data
+    if (file.peek() != std::char_traits<char>::eof()) {
+        throw std::runtime_error("load labels IDC file contains unexpected trailing data");
+    }
+
+    // Copy into a int64 tensor
+    auto storage = std::make_shared<Storage>(num_labels * sizeof(int64_t), Device::CPU);
+    int64_t* output = static_cast<int64_t*>(storage->get_ptr());
+    for (size_t i = 0; i < num_labels; i++) {
+        output[i] = raw_labels[i];
+    }
+
+    return Tensor(std::move(storage), {static_cast<int64_t>(num_labels)}, Device::CPU, false, Dtype::INT64);
+
+}
+
+Tensor select_rows(const Tensor& t, const std::vector<int64_t>& rows) {
+    const std::vector<int64_t>& shape = t.get_shape();
+    if (shape.empty() || shape[0] == 0) {
+        throw std::out_of_range("select rows: tensor has no rows");
+    }
+
+    // bytes in one row: 
+    const size_t row_bytes = (t.num_elements() / shape[0]) * dtype_size(t.get_dtype());
+
+    std::vector<int64_t> out_shape = shape;
+    out_shape[0] = static_cast<int64_t>(rows.size());
+    auto storage = std::make_shared<Storage>(rows.size() * row_bytes, Device::CPU);
+
+    // copy each row as raw bytes
+    const char* src = static_cast<const char*>(t.get_data()->get_ptr());
+    char* dst = static_cast<char*>(storage->get_ptr());
+    for (size_t i = 0; i < rows.size(); i++) {
+        if (rows[i] < 0 || rows[i] >= shape[0]) {
+            throw std::out_of_range("selected rows: row " + std::to_string(rows[i]) + " is out of range");
+        }
+        std::memcpy(dst + i * row_bytes, src + rows[i] * row_bytes, row_bytes);
+    }
+    
+    return Tensor(std::move(storage), out_shape, Device::CPU, false, t.get_dtype());
+}
