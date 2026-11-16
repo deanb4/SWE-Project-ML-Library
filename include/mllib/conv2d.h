@@ -4,6 +4,7 @@
 #include <vector>
 #include <cstddef>
 #include "tensor.h"
+#include "function.h"
 
 /**
  * @class Conv2d

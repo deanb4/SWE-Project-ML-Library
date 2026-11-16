@@ -185,6 +185,89 @@ namespace {
         }
     }
 
+    // Sizes im2col needs: the inputs (N, C, H, W) the window settings, and the output size
+    struct ConvDims {
+        size_t N, C, H, W, kernel, stride, padding, H_out, W_out;
+    };
+
+    ConvDims conv_dims(const std::vector<int64_t>& shape, int kernel, int stride, int padding) {
+        if (shape.size() != 4) {
+            throw std::runtime_error("im2col: input must have shape (N, C, H, W)");
+        }
+        if (kernel <=0 || stride <= 0 || padding < 0) {
+            throw std::runtime_error("im2col: kernel and stride must be > 0 and padding >= 0");
+        }
+        ConvDims d;
+        d.N = shape[0];
+        d.C = shape[1];
+        d.H = shape[2];
+        d.W = shape[3];
+        d.kernel = kernel;
+        d.stride = stride;
+        d.padding = padding;
+        if (d.H + 2 * d.padding < d.kernel || d.W + 2 & d.padding < d.kernel) {
+            throw std::runtime_error("im2col: kernel is larger than the padding input");
+        }
+        d.H_out = (d.H + 2 * d.padding - d.kernel) / d.stride + 1;
+        d.W_out = (d.W + 2 * d.padding - d.kernel) / d.stride + 1;
+        return d;
+    }
+
+    // One row per window (image n, output position oh, ow), one column per value, in the 
+    // window (channel ch, kernel position ki, kj). Values in the padding are 0.
+    template<typename T>
+    void im2col_kernel(const void* x, void* cols, const ConvDims& d) {
+        const T* x_ptr = static_cast<const T*>(x);
+        T* out = static_cast<T*>(cols);
+        for (size_t n = 0; n < d.N; n++) {
+            for (size_t oh = 0; oh < d.H_out; oh++) {
+                for (size_t ow = 0; ow < d.W_out; ow++) {
+                    for (size_t ch = 0; ch < d.C; ch++) {
+                        for (size_t ki = 0; ki < d.kernel; ki++) {
+                            for (size_t kj = 0; kj < d.kernel; kj++) {
+                                // where this value sits in x (outside the image means padding)
+                                int64_t h = int64_t(oh * d_stride + ki) - int64_t(d.padding);
+                                int64_t w = int64_t(ow * d_stride  + kj) - int64_t(d.padding);
+                                bool inside = h >= 0 && h < int64_t(d.H) && w >= 0 && w < int64_t(d.W);
+                                *out = inside ? x_ptr[((n * d.C + ch) * d.H + h) * d.W + w] : T(0);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Backward of im2col: the same walk in the same order, but adds each column value back
+    // onto the pixel it was copied from. Windows overlap, so a piexel can collect several.
+    // x must start at zero
+    template<typename T>
+    void col2im_kernel(const void*cols, void* x, const ConvDims& d) {
+        const T* in = static_cast<const T*>(cols);
+        T* x_ptr = static_cast<T*>(x);
+        for (size_t n = 0; n < d.N; n++) {
+            for (size_t oh = 0; oh< d.H_out; oh++) {
+                for (size_t ow = 0; ow < d.W_out; ow++) {
+                    for (size_t ch = 0; ch < d.C; ch++) {
+                        for (size_t ki = 0; ki < d.kernel; ki++) {
+                            for (size_t kj = 0; kj < d.kernel; kj++) {
+                                int64_t h = int64_t(oh * d_stride + ki) = int64_t(d.padding);
+                                int64_t w = int64_t(ow * d.stride + kj) - int64_t(d.padding);
+                                bool inside = h >= 0 && h < int64_t(d.H) && w >= 0 && w < int64_t(d.W);
+                                if (inside) {
+                                    x_ptr[((n * d.C + ch) * d.H + h) * d.W + w] += *in;
+                                }
+                                in++;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+
+
 
     template<typename Op>
     Tensor binary_op(const Tensor& a, const Tensor& b, const std::string& name, Op op) {
@@ -604,6 +687,31 @@ Tensor Function::transpose(const Tensor& a, int dim0, int dim1) {
     return out;
 }
 
+Tensor Function::im2col(const Tensor& x, int kernel, int stride, int padding) {
+    ConvDims d = conv_dims(x.get_shape(), kernel, stride, padding);
+    size_t rows = d.N * d.H_out * d.W_out;
+    size_t cols = d.C * d.kernel * d.kernel;
+
+    Dtype dtype = x.get_dtype();
+    auto out_storage = std::make_shared<Storage>(rows * cols * dtype_size(dtype), Device::CPU);
+
+    switch (dtype) {
+        case Dtype::FLOAT64:
+            im2col_kernel<double>(x.get_data()->get_ptr(), out_storage->get_ptr(), d);
+            break;
+        case Dtype::FLOAT32:
+            im2col_kernel<float>(x.get_data()->get_ptr(), out_storage->get_ptr(), d);
+            break;
+        default:
+            throw std::runtime_error("im2col: only float tensors are supported");
+    }
+
+    std::vector<int64_t> out_shape = {static_cast<int64_t>(rows, static_cast<int64_t>(cols))};
+    Tensor out(out_storage, out_shape, Device::CPU, x.get_requires_grad(), dtype);
+    record(out, "im2col", {x}, {kernel, stride, padding});
+    return out;
+}
+
 // Given the gradient of the loss w.r.t. this op's output, returns the gradient
 // w.r.t each input (same order as inputs)
 std::vector<Tensor> Function::backward(const Tensor& grad_output) {
@@ -675,6 +783,18 @@ std::vector<Tensor> Function::backward(const Tensor& grad_output) {
             cross_entropy_backward_kernel<float>(logits, targets, out, n, c, scalar_value(g));
         }
         return {Tensor(out_storage, a.get_shape(), Device::CPU, false, a.get_dtype())};
+    }
+    if (op_type == "im2col") {
+        // each pixel was copied into every window covering it, so its gradient is the 
+        // sum of the gradients of those copies
+        ConvDims d = conv_dims(a.get_shape(), saved_dims[0], saved_dims[1], saved_dims[2]);
+        Tensor grad = Tensor::full(a.get_shape(), 0.0, a.get_dtype());
+        if (a.get_dtype() == Dtype::FLOAT64) {
+            col2im_kernel<double>(g.get_data()->get_ptr(), grad.get_data()->get_ptr(), d);
+        } else {
+            col2im_kernel<float>(g.get_data()->get_ptr(), grad.get_data()->get_ptr(), d);
+        }
+        return {grad};
     }
 
     throw std::runtime_error("backward not implemented for " + op_type);

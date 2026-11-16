@@ -41,6 +41,10 @@ class Function {
 
         Tensor reshape(const Tensor& a, const std::vector<int64_t>& shape);
         Tensor transpose(const Tensor& a, int dim0, int dim1);
+
+        // Copies every kernel x kernel window of x (N,C,H,W) into one row, so a convultion
+        // becomes a single matmul. Output shape: (N*H_out*W_out, C * kernel * kernel)
+        Tensor im2col(const Tensor& x, int kernel, int stride, int padding);
         std::vector<Tensor> backward(const Tensor& grad_output);
 };
 

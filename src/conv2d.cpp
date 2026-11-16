@@ -63,6 +63,7 @@ namespace {
             out_channels, sizeof(float), "Conv2d: bias allocation size overflows size_t");
     }
 
+
     //Creates and initializes the learnable convolution kernels
     Tensor create_weight(
         size_t in_channels, size_t out_channels, size_t kernel_size, int stride, int padding) {
@@ -147,10 +148,37 @@ Conv2d::Conv2d(size_t in_channels, size_t out_channels, size_t kernel_size, int 
     padding(padding) { }
 
 Tensor Conv2d::forward(const Tensor& x) const {
-    //Convolution computation will be implemented when im2col operation is available
-    (void)x;
+    const std::vector<int64_t>& w_shape = weight.get_shape();
+    const std::vector<int64_t>& x_shape = x.get_shape();
+    if (x_shape.size() != 4 || x_shape[1] != w_shape[1]) {
+        throw std::invalid_argument("Conv2d: input must have shape (N, in_channels, H, W)");
+    }
 
-    throw std::logic_error("Conv2d::forward is not implemented yet; waiting on im2col convolution operation");
+    Function F("conv2d", {}, nullptr);
+    const int64_t n = x_shape[0];
+    const int64_t out_channels = w_shape[0];
+    const int kernel = static_cast<int>(w_shape[2]);
+
+    // Every window becomes one row: (N * H_out * W_out, in_channels * k * k) 
+    Tensor cols = F.im2col(x, kernel, stride, padding);
+
+    // each kernel flattened into one column: (in_channels * k * k, out_channels)
+    Tensor w = F.transpose(F.reshape(weight, {out_channels, -1}), 0, 1);
+
+    // one matmul applies every kernel to every window: (N * H_out * W_out, out_channels)
+    Tensor out = F.matmul(cols, w);
+
+    // add each channel's bias to every row: (rows, 1) ones @ (1, out_channels) bias, as in linear
+    Tensor ones = Tensor::full({out.get_shape()[0], 1}, 1.0, Dtype::FLOAT32);
+    out = F.add(out, F.matmul(ones, F.reshape(bias, {1, out_channels})));
+
+    // rows are ordered (n, oh, ow), so out is really (N, H_out * W_out, out_channels);
+    // move the channels in front of the positions to get (N, out_channels, H_out, W_out)
+    const int64_t h_out =  (x_shape[2] + 2 * padding - kernel) / stride + 1;
+    const int64_t w_out = (x_shape[3] + 2 * padding - kernel) / stride + 1;
+    out = F.transpose(F.reshape(out, {n, h_out * w_out, out_channels}), 1,2);
+    return F.reshape(out, {n, out_channels, h_out, w_out});
+    
 }
 
 std::vector<Tensor> Conv2d::parameters() const {
