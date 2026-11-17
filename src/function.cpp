@@ -205,7 +205,7 @@ namespace {
         d.kernel = kernel;
         d.stride = stride;
         d.padding = padding;
-        if (d.H + 2 * d.padding < d.kernel || d.W + 2 & d.padding < d.kernel) {
+        if (d.H + 2 * d.padding < d.kernel || d.W + 2 * d.padding < d.kernel) {
             throw std::runtime_error("im2col: kernel is larger than the padding input");
         }
         d.H_out = (d.H + 2 * d.padding - d.kernel) / d.stride + 1;
@@ -226,10 +226,10 @@ namespace {
                         for (size_t ki = 0; ki < d.kernel; ki++) {
                             for (size_t kj = 0; kj < d.kernel; kj++) {
                                 // where this value sits in x (outside the image means padding)
-                                int64_t h = int64_t(oh * d_stride + ki) - int64_t(d.padding);
-                                int64_t w = int64_t(ow * d_stride  + kj) - int64_t(d.padding);
+                                int64_t h = int64_t(oh * d.stride + ki) - int64_t(d.padding);
+                                int64_t w = int64_t(ow * d.stride  + kj) - int64_t(d.padding);
                                 bool inside = h >= 0 && h < int64_t(d.H) && w >= 0 && w < int64_t(d.W);
-                                *out = inside ? x_ptr[((n * d.C + ch) * d.H + h) * d.W + w] : T(0);
+                                *out++ = inside ? x_ptr[((n * d.C + ch) * d.H + h) * d.W + w] : T(0);
                             }
                         }
                     }
@@ -251,7 +251,7 @@ namespace {
                     for (size_t ch = 0; ch < d.C; ch++) {
                         for (size_t ki = 0; ki < d.kernel; ki++) {
                             for (size_t kj = 0; kj < d.kernel; kj++) {
-                                int64_t h = int64_t(oh * d_stride + ki) = int64_t(d.padding);
+                                int64_t h = int64_t(oh * d.stride + ki) - int64_t(d.padding);
                                 int64_t w = int64_t(ow * d.stride + kj) - int64_t(d.padding);
                                 bool inside = h >= 0 && h < int64_t(d.H) && w >= 0 && w < int64_t(d.W);
                                 if (inside) {
@@ -668,19 +668,50 @@ Tensor Function::transpose(const Tensor& a, int dim0, int dim1) {
     const char* src = static_cast<const char*>(a.get_data()->get_ptr());
     char* dst = static_cast<char*>(out_storage->get_ptr());
 
-    for (size_t i = 0; i < n; i++) {
-        // split output index i into position along each dim
-        size_t rest = i;
-        size_t src_index = 0;
-        for (int d = ndim -1; d >=0; d--) {
-            size_t dim_size = static_cast<size_t>(out_shape[d]);
-            src_index += (rest % dim_size) * strides[d];
-            rest /= dim_size;
-        }
+    /******************** IMPORTANT! TAKE NOTE TO CHANGE ******************************** */
+    //  % and a / for every dimension of every element, 
+    // and division is one of the slowest things a CPU does.
+    // The CNN transposes its largest tensors several times per batch, 
+    // in both forward and backward. 
+    // The odometer version visits the output in order and keeps
+    // track of the matching input position with additions only.
 
-        // copy the elemtne's bytes, so every dtype works without a switch
+    // for (size_t i = 0; i < n; i++) {
+    //     // split output index i into position along each dim
+    //     size_t rest = i;
+    //     size_t src_index = 0;
+    //     for (int d = ndim -1; d >=0; d--) {
+    //         size_t dim_size = static_cast<size_t>(out_shape[d]);
+    //         src_index += (rest % dim_size) * strides[d];
+    //         rest /= dim_size;
+    //     }
+
+    //     // copy the elemtne's bytes, so every dtype works without a switch
+    //     std::memcpy(dst + i * elem_size, src + src_index * elem_size, elem_size);
+    // }
+        // walk the output in order like an odometer: pos holds the position along each dim and
+    // src_index the matching element of a, both updated with additions only (no / or %)
+
+    std::vector<size_t> pos(ndim, 0);
+    size_t src_index = 0;
+    for (size_t i = 0; i < n; i++) {
+        // copy the element's bytes, so every dtype works without a switch
         std::memcpy(dst + i * elem_size, src + src_index * elem_size, elem_size);
+
+        // step to the next output position: bump the last dim, carrying into earlier dims
+        for (int d = ndim - 1; d >= 0; d--) {
+            pos[d]++;
+            src_index += strides[d];
+            if (pos[d] < static_cast<size_t>(out_shape[d])) {
+                break;
+            }
+            src_index -= pos[d] * strides[d];   // wrapped around: back to the start of this dim
+            pos[d] = 0;
+        }
     }
+
+    /**************************************************** */
+
 
     Tensor out(out_storage, out_shape, Device::CPU, a.get_requires_grad(), a.get_dtype());
     record(out, "transpose", {a}, {dim0, dim1});
@@ -706,7 +737,7 @@ Tensor Function::im2col(const Tensor& x, int kernel, int stride, int padding) {
             throw std::runtime_error("im2col: only float tensors are supported");
     }
 
-    std::vector<int64_t> out_shape = {static_cast<int64_t>(rows, static_cast<int64_t>(cols))};
+    std::vector<int64_t> out_shape = {static_cast<int64_t>(rows), static_cast<int64_t>(cols)};
     Tensor out(out_storage, out_shape, Device::CPU, x.get_requires_grad(), dtype);
     record(out, "im2col", {x}, {kernel, stride, padding});
     return out;
