@@ -47,26 +47,26 @@ class TextDataset {
     private:
         std::string text;
         std::string vocab;
-        std::vector<uint8_t> char_to_id;
+        std::vector<int> char_to_id;
         std::vector<uint8_t> encoded;
         mutable std::mt19937 rng;
 
     public:
         /**
-         * @brief Reads `path` and builds a character vocabulary from its contents.
+         * @brief Reads `path` and builds a byte vocabulary from its contents.
          * @throws std::runtime_error If the file cannot be opened or is empty.
          */
         explicit TextDataset(const std::string& path);
 
         size_t vocab_size() const;
 
-        /** Characters in ID order: vocabulary()[id] is the character encoded as `id`. */
+        /** Characters in ID order: vocabulary()[id] is the byte encoded as `id`. */
         const std::string& vocabulary() const;
 
-        /** Encodes string `s` as an INT64 tensor of IDs of shape (L). Unknown characters throw. */
+        /** Encodes string `s` as a UINT8 tensor of IDs of shape (L). Unknown characters throw. */
         Tensor encode(const std::string& s) const;
 
-        /** Decodes an INT64 tensor of token IDs back to a string. */
+        /** Decodes a UINT8 tensor of token IDs back to a string. */
         std::string decode(const Tensor& ids) const;
 
         /**
@@ -74,7 +74,7 @@ class TextDataset {
          *
          * @param batch_size B, number of independent windows.
          * @param block_size T, number of tokens in each window.
-         * @return `{x, y}` both INT64 of shape (B, T), with `y[b][t]` equal to the
+         * @return `{x, y}` both UINT8 of shape (B, T), with `y[b][t]` equal to the
          *         character that follows `x[b][t]` in the file.
          *
          * @throws std::invalid_argument If B or T is zero, or the text is shorter than T + 1.

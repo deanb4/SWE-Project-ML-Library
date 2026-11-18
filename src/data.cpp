@@ -213,6 +213,7 @@ Tensor select_rows(const Tensor& t, const std::vector<int64_t>& rows) {
     return Tensor(std::move(storage), out_shape, Device::CPU, false, t.get_dtype());
 }
 
+
 namespace {
     Tensor make_uint8_t_tensor(const std::vector<uint8_t>& values, std::vector<int64_t> shape) {
         const size_t n = values.size();
@@ -220,7 +221,7 @@ namespace {
         if (n > 0) {
             std::memcpy(storage->get_ptr(), values.data(), n * sizeof(uint8_t));
         }
-        return Tensor(std::move(storage), shape, Device::CPU, false, Dtype::UINT8);
+        return Tensor(std::move(storage), std::move(shape), Device::CPU, false, Dtype::UINT8);
     }
 }
 
@@ -249,7 +250,7 @@ TextDataset::TextDataset(const std::string& path) : char_to_id(256, -1), rng(std
     for (int i = 0; i < 256; ++i) {
         if (seen[i]) {
             //character associated with token id from [0, vocab_size)
-            char_to_id[i] = static_cast<uint8_t>(vocab.size());
+            char_to_id[i] = static_cast<int>(vocab.size());
             vocab.push_back(static_cast<char>(i));
         }
     }
@@ -273,10 +274,10 @@ Tensor TextDataset::encode(const std::string& s) const {
     for (size_t i = 0; i < s.size(); ++i) {
         //check if character is in vocabulary
         const int id = char_to_id[static_cast<unsigned char>(s[i])];
-        if (id < 0) {
+        if (id == -1) {
             throw std::out_of_range("TextDataset::encode: character is not in the vocabulary");
         }
-        ids[i] = id;
+        ids[i] = static_cast<uint8_t>(id);
     }
     return make_uint8_t_tensor(ids, {static_cast<int64_t>(ids.size())});
 }
@@ -295,7 +296,9 @@ std::string TextDataset::decode(const Tensor& ids) const {
     std::string out;
     out.resize(n);
     for (size_t i = 0; i < n; ++i) {
-        if (values[i] < 0 || values[i] >= vocab.size()) {
+        //Since values consists of uint8_t numbers, it is impossible for it to be negative.
+        //Therefore, only need to check if the id is greater than or equal to the vocab size
+        if (static_cast<size_t>(values[i]) >= vocab.size()) {
             throw std::out_of_range("TextDataset::decode: token ID is outside the vocabulary");
         }
         out[i] = vocab[values[i]];
