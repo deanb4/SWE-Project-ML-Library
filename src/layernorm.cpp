@@ -1,4 +1,6 @@
 #include "mllib/layernorm.h"
+#include "mllib/autograd.h"
+#include "mllib/function.h"
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -172,17 +174,31 @@ Tensor LayerNorm::forward(const Tensor& x) const {
         throw std::runtime_error("LayerNorm::forward: only CPU tensors are currently supported");
     }
 
-    //layer normalization requires floating-point input.
-    switch (x.get_dtype()) {
-        case Dtype::FLOAT32:
-            return layer_norm<float>(x, gamma, beta, eps, dim);
+    Tensor out = [&]() {
+        switch (x.get_dtype()) {
+            case Dtype::FLOAT32:
+                return layer_norm<float>(x, gamma, beta, eps, dim);
 
-        case Dtype::FLOAT64:
-            return layer_norm<double>(x, gamma, beta, eps, dim);
+            case Dtype::FLOAT64:
+                return layer_norm<double>(x, gamma, beta, eps, dim);
 
-        default:
-            throw std::invalid_argument("LayerNorm::forward: input must have FLOAT32 or FLOAT64 dtype");
+            default:
+                throw std::invalid_argument("LayerNorm::forward: input must have FLOAT32 or FLOAT64 dtype");
+        }
+    }();
+
+    if (out.get_requires_grad() && Autograd::is_grad_enabled()) {
+        // eps is not a tensor input; stash it so backward can recompute mean/var from x.
+        Tensor eps_tensor = Tensor::full({1}, eps, Dtype::FLOAT64);
+        std::vector<std::shared_ptr<Tensor>> inputs{
+            std::make_shared<Tensor>(x),
+            std::make_shared<Tensor>(gamma),
+            std::make_shared<Tensor>(beta)
+        };
+        out.set_grad_fn(std::make_shared<Function>("layernorm", inputs, std::make_shared<Tensor>(eps_tensor)));
     }
+
+    return out;
 }
 
 std::vector<Tensor> LayerNorm::parameters() const {

@@ -5,6 +5,8 @@
 #include <stdexcept>
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <vector>
 
 
 // Anonymous namespace for Helper functions
@@ -267,6 +269,86 @@ namespace {
     }
 
 
+    template<typename T, typename IdType>
+    void embedding_backward_kernel(
+        const IdType* ids,
+        size_t num_ids,
+        size_t embed_dim,
+        const T* grad_out,
+        T* grad_weight
+    ) {
+        for (size_t k = 0; k < num_ids; ++k) {
+            const int64_t token_id = static_cast<int64_t>(ids[k]);
+            T* row = grad_weight + static_cast<size_t>(token_id) * embed_dim;
+            const T* g = grad_out + k * embed_dim;
+            for (size_t j = 0; j < embed_dim; ++j) {
+                row[j] += g[j];
+            }
+        }
+    }
+
+    template<typename T>
+    void layernorm_backward_kernel(
+        const T* x,
+        const float* gamma,
+        const T* grad_out,
+        T* grad_x,
+        float* grad_gamma,
+        float* grad_beta,
+        size_t vector_count,
+        size_t dim,
+        double eps
+    ) {
+        std::vector<double> dgamma(dim, 0.0);
+        std::vector<double> dbeta(dim, 0.0);
+        std::vector<double> xhat(dim);
+        std::vector<double> dxhat(dim);
+
+        for (size_t v = 0; v < vector_count; ++v) {
+            const size_t offset = v * dim;
+
+            double mean = 0.0;
+            for (size_t j = 0; j < dim; ++j) {
+                mean += static_cast<double>(x[offset + j]);
+            }
+            mean /= static_cast<double>(dim);
+
+            double variance = 0.0;
+            for (size_t j = 0; j < dim; ++j) {
+                const double difference = static_cast<double>(x[offset + j]) - mean;
+                variance += difference * difference;
+            }
+            variance /= static_cast<double>(dim);
+            const double inv_std = 1.0 / std::sqrt(variance + eps);
+
+            for (size_t j = 0; j < dim; ++j) {
+                xhat[j] = (static_cast<double>(x[offset + j]) - mean) * inv_std;
+                dxhat[j] = static_cast<double>(grad_out[offset + j]) *
+                           static_cast<double>(gamma[j]);
+                dgamma[j] += static_cast<double>(grad_out[offset + j]) * xhat[j];
+                dbeta[j] += static_cast<double>(grad_out[offset + j]);
+            }
+
+            double mean_dxhat = 0.0;
+            double mean_dxhat_xhat = 0.0;
+            for (size_t j = 0; j < dim; ++j) {
+                mean_dxhat += dxhat[j];
+                mean_dxhat_xhat += dxhat[j] * xhat[j];
+            }
+            mean_dxhat /= static_cast<double>(dim);
+            mean_dxhat_xhat /= static_cast<double>(dim);
+
+            for (size_t j = 0; j < dim; ++j) {
+                grad_x[offset + j] = static_cast<T>(
+                    inv_std * (dxhat[j] - mean_dxhat - xhat[j] * mean_dxhat_xhat));
+            }
+        }
+
+        for (size_t j = 0; j < dim; ++j) {
+            grad_gamma[j] = static_cast<float>(dgamma[j]);
+            grad_beta[j] = static_cast<float>(dbeta[j]);
+        }
+    }
 
 
     template<typename Op>
@@ -826,6 +908,73 @@ std::vector<Tensor> Function::backward(const Tensor& grad_output) {
             col2im_kernel<float>(g.get_data()->get_ptr(), grad.get_data()->get_ptr(), d);
         }
         return {grad};
+    }
+    if (op_type == "embedding") {
+        // d(table)/d(row id) = the output gradient at every position that looked up that row
+        const Tensor& ids = *saved_tensors;
+        const size_t embed_dim = static_cast<size_t>(a.get_shape().back());
+        const size_t num_ids = g.num_elements() / embed_dim;
+        Tensor grad_weight = Tensor::full(a.get_shape(), 0.0, a.get_dtype());
+        const void* ids_data = ids.get_data()->get_ptr();
+        const void* g_data = g.get_data()->get_ptr();
+        void* gw = grad_weight.get_data()->get_ptr();
+
+        auto run = [&](auto* id_ptr) {
+            if (a.get_dtype() == Dtype::FLOAT64) {
+                embedding_backward_kernel(
+                    id_ptr, num_ids, embed_dim,
+                    static_cast<const double*>(g_data),
+                    static_cast<double*>(gw));
+            } else {
+                embedding_backward_kernel(
+                    id_ptr, num_ids, embed_dim,
+                    static_cast<const float*>(g_data),
+                    static_cast<float*>(gw));
+            }
+        };
+
+        switch (ids.get_dtype()) {
+            case Dtype::INT64: run(static_cast<const int64_t*>(ids_data)); break;
+            case Dtype::INT32: run(static_cast<const int32_t*>(ids_data)); break;
+            case Dtype::INT16: run(static_cast<const int16_t*>(ids_data)); break;
+            case Dtype::INT8:  run(static_cast<const int8_t*>(ids_data)); break;
+            case Dtype::UINT8: run(static_cast<const uint8_t*>(ids_data)); break;
+            default:
+                throw std::runtime_error("embedding backward: ids must have an integer dtype");
+        }
+        return {grad_weight};
+    }
+    if (op_type == "layernorm") {
+        const Tensor& gamma = *inputs[1];
+        const Tensor& beta = *inputs[2];
+        const size_t dim = static_cast<size_t>(gamma.get_shape()[0]);
+        const size_t vector_count = a.num_elements() / dim;
+        const double eps = *static_cast<const double*>(saved_tensors->get_data()->get_ptr());
+
+        Tensor grad_x = Tensor::full(a.get_shape(), 0.0, a.get_dtype());
+        Tensor grad_gamma = Tensor::full(gamma.get_shape(), 0.0, gamma.get_dtype());
+        Tensor grad_beta = Tensor::full(beta.get_shape(), 0.0, beta.get_dtype());
+
+        if (a.get_dtype() == Dtype::FLOAT64) {
+            layernorm_backward_kernel<double>(
+                static_cast<const double*>(a.get_data()->get_ptr()),
+                static_cast<const float*>(gamma.get_data()->get_ptr()),
+                static_cast<const double*>(g.get_data()->get_ptr()),
+                static_cast<double*>(grad_x.get_data()->get_ptr()),
+                static_cast<float*>(grad_gamma.get_data()->get_ptr()),
+                static_cast<float*>(grad_beta.get_data()->get_ptr()),
+                vector_count, dim, eps);
+        } else {
+            layernorm_backward_kernel<float>(
+                static_cast<const float*>(a.get_data()->get_ptr()),
+                static_cast<const float*>(gamma.get_data()->get_ptr()),
+                static_cast<const float*>(g.get_data()->get_ptr()),
+                static_cast<float*>(grad_x.get_data()->get_ptr()),
+                static_cast<float*>(grad_gamma.get_data()->get_ptr()),
+                static_cast<float*>(grad_beta.get_data()->get_ptr()),
+                vector_count, dim, eps);
+        }
+        return {grad_x, grad_gamma, grad_beta};
     }
 
     throw std::runtime_error("backward not implemented for " + op_type);
