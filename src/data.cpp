@@ -1,6 +1,7 @@
 #include "mllib/data.h"
 #include <cstring>
 #include <fstream>
+#include <iterator>
 #include <stdexcept>
 
 #include <cstdint>
@@ -210,4 +211,130 @@ Tensor select_rows(const Tensor& t, const std::vector<int64_t>& rows) {
     }
     
     return Tensor(std::move(storage), out_shape, Device::CPU, false, t.get_dtype());
+}
+
+namespace {
+    Tensor make_int64_tensor(const std::vector<int64_t>& values, std::vector<int64_t> shape) {
+        const size_t n = values.size();
+        auto storage = std::make_shared<Storage>(n * sizeof(int64_t), Device::CPU);
+        if (n > 0) {
+            std::memcpy(storage->get_ptr(), values.data(), n * sizeof(int64_t));
+        }
+        return Tensor(std::move(storage), std::move(shape), Device::CPU, false, Dtype::INT64);
+    }
+}
+
+TextDataset::TextDataset(const std::string& path) : char_to_id(256, -1), rng(std::random_device{}()) {
+
+    std::ifstream file(path, std::ios::binary);
+    if (!file.is_open()) {
+        throw std::runtime_error("TextDataset: could not open file " + path);
+    }
+
+    //Assign string with contents of the text file from beginning to end
+    text.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+
+    if (file.bad()) {
+        throw std::runtime_error("TextDataset: error while reading " + path);
+    }
+    if (text.empty()) {
+        throw std::runtime_error("TextDataset: file is empty " + path);
+    }
+
+    bool seen[256] = {};
+    for (unsigned char c : text) {
+        seen[c] = true;
+    }
+    vocab.clear();
+    for (int i = 0; i < 256; ++i) {
+        if (seen[i]) {
+            char_to_id[i] = vocab.size();
+            vocab.push_back(static_cast<char>(i));
+        }
+    }
+
+    encoded.resize(text.size());
+    for (size_t i = 0; i < text.size(); ++i) {
+        encoded[i] = char_to_id[static_cast<unsigned char>(text[i])];
+    }
+}
+
+size_t TextDataset::vocab_size() const {
+    return vocab.size();
+}
+
+const std::string& TextDataset::vocabulary() const {
+    return vocab;
+}
+
+Tensor TextDataset::encode(const std::string& s) const {
+    std::vector<int64_t> ids(s.size());
+    for (size_t i = 0; i < s.size(); ++i) {
+        const int id = char_to_id[static_cast<unsigned char>(s[i])];
+        if (id < 0) {
+            throw std::out_of_range("TextDataset::encode: character is not in the vocabulary");
+        }
+        ids[i] = id;
+    }
+    return make_int64_tensor(ids, {static_cast<int64_t>(ids.size())});
+}
+
+std::string TextDataset::decode(const Tensor& ids) const {
+    if (ids.get_dtype() != Dtype::INT64) {
+        throw std::invalid_argument("TextDataset::decode: ids must have INT64 dtype");
+    }
+    if (ids.get_device() != Device::CPU) {
+        throw std::invalid_argument("TextDataset::decode: only CPU tensors are supported");
+    }
+
+    const size_t n = ids.num_elements();
+    const int64_t* values = static_cast<const int64_t*>(ids.get_data()->get_ptr());
+    const int64_t vocab_n = static_cast<int64_t>(vocab.size());
+
+    std::string out;
+    out.resize(n);
+    for (size_t i = 0; i < n; ++i) {
+        if (values[i] < 0 || values[i] >= vocab_n) {
+            throw std::out_of_range("TextDataset::decode: token ID is outside the vocabulary");
+        }
+        out[i] = vocab[static_cast<size_t>(values[i])];
+    }
+    return out;
+}
+
+std::pair<Tensor, Tensor> TextDataset::get_batch(size_t batch_size, size_t block_size) const {
+    if (batch_size == 0) {
+        throw std::invalid_argument("TextDataset::get_batch: batch_size must be greater than zero");
+    }
+    if (block_size == 0) {
+        throw std::invalid_argument("TextDataset::get_batch: block_size must be greater than zero");
+    }
+    if (encoded.size() < block_size + 1) {
+        throw std::invalid_argument(
+            "TextDataset::get_batch: text is shorter than block_size + 1");
+    }
+
+    const size_t max_start = encoded.size() - block_size - 1;
+    std::uniform_int_distribution<size_t> start_dist(0, max_start);
+
+    const size_t n = batch_size * block_size;
+    std::vector<int64_t> x_values(n);
+    std::vector<int64_t> y_values(n);
+
+    for (size_t b = 0; b < batch_size; ++b) {
+        const size_t start = start_dist(rng);
+        for (size_t t = 0; t < block_size; ++t) {
+            x_values[b * block_size + t] = encoded[start + t];
+            y_values[b * block_size + t] = encoded[start + t + 1];
+        }
+    }
+
+    const std::vector<int64_t> shape{
+        static_cast<int64_t>(batch_size),
+        static_cast<int64_t>(block_size)
+    };
+    return {
+        make_int64_tensor(x_values, shape),
+        make_int64_tensor(y_values, shape)
+    };
 }
