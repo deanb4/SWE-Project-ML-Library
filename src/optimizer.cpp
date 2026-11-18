@@ -43,7 +43,7 @@ void Adam::step() {
 
     // m and v start at zero, so early on they are too small; dividing by these undoes that
     const float correction1 = 1.0f - std::pow(beta1, static_cast<float>(t));
-    const float correction2 = 1.0f - std::pow(beta1, static_cast<float>(t));
+    const float correction2 = 1.0f - std::pow(beta2, static_cast<float>(t));
 
     for (size_t i = 0; i < params.size(); i++) {
         Tensor& p = params[i];
