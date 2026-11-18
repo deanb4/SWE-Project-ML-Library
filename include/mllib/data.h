@@ -47,8 +47,8 @@ class TextDataset {
     private:
         std::string text;
         std::string vocab;
-        std::vector<int> char_to_id;
-        std::vector<int64_t> encoded;
+        std::vector<uint8_t> char_to_id;
+        std::vector<uint8_t> encoded;
         mutable std::mt19937 rng;
 
     public:
