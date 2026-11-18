@@ -15,9 +15,15 @@
 #include "mllib/function.h"
 #include "mllib/embedding.h"
 #include "mllib/conv2d.h"
+#include "mllib/data.h"
+#include "mllib/module.h"
 #include "mllib/storage.h"
 #include "mllib/tensor.h"
 #include "mllib/layernorm.h"
+#include "mllib/sequential.h"
+
+#include <fstream>
+#include <type_traits>
 
 namespace {
 
@@ -498,15 +504,22 @@ const std::vector<float> kEmbeddingWeights = {
 // through parameters() before checking exact forward results.
 void set_embedding_weights(Embedding& embedding,
                            const std::vector<float>& values) {
-    auto table = embedding.parameters();
-    if (table->num_elements() != values.size()) {
+    std::vector<Tensor> params = embedding.parameters();
+    if (params.size() != 1 || params[0].num_elements() != values.size()) {
         throw std::invalid_argument(
             "set_embedding_weights: value count does not match table size");
     }
     if (!values.empty()) {
-        std::memcpy(table->get_data()->get_ptr(), values.data(),
+        std::memcpy(params[0].get_data()->get_ptr(), values.data(),
                     values.size() * sizeof(float));
     }
+}
+
+std::vector<float> embedding_grad(const Tensor& t) {
+    if (!t.get_grad()) {
+        throw std::runtime_error("embedding_grad: tensor has no grad");
+    }
+    return to_vector<float>(*t.get_grad());
 }
 
 class EmbeddingTest : public ::testing::Test {};
@@ -549,21 +562,30 @@ TEST_F(EmbeddingTest, BatchedInputHasShapeBatchTimeEmbeddingDim) {
 TEST_F(EmbeddingTest, ParametersReturnsTheLearnableTable) {
     Embedding embedding(/*vocab_size=*/4, /*embed_dim=*/3);
 
-    auto table = embedding.parameters();
-    ASSERT_NE(table, nullptr);
-    EXPECT_EQ(table->get_shape(), (std::vector<int64_t>{4, 3}));
-    EXPECT_TRUE(table->get_requires_grad());
+    std::vector<Tensor> params = embedding.parameters();
+    ASSERT_EQ(params.size(), 1u);
+    EXPECT_EQ(params[0].get_shape(), (std::vector<int64_t>{4, 3}));
+    EXPECT_TRUE(params[0].get_requires_grad());
 
-    // parameters() may return a Tensor wrapper by value, but it must reference the
+    // parameters() returns a Tensor wrapper by value, but it must reference the
     // same underlying table storage on each call.
-    auto table_again = embedding.parameters();
-    ASSERT_NE(table_again, nullptr);
-    EXPECT_EQ(table->get_data().get(), table_again->get_data().get());
+    std::vector<Tensor> params_again = embedding.parameters();
+    ASSERT_EQ(params_again.size(), 1u);
+    EXPECT_EQ(params[0].get_data().get(), params_again[0].get_data().get());
 
     set_embedding_weights(embedding, kEmbeddingWeights);
     Tensor ids = make_tensor<int64_t>({1}, {1}, Dtype::INT64);
     EXPECT_EQ(to_vector<float>(embedding.forward(ids)),
               (std::vector<float>{20, 21, 22}));
+}
+
+TEST_F(EmbeddingTest, InheritsModule) {
+    EXPECT_TRUE((std::is_base_of<Module, Embedding>::value));
+
+    Sequential model;
+    model.add(std::make_shared<Embedding>(4, 3));
+    EXPECT_EQ(model.parameters().size(), 1u);
+    EXPECT_EQ(model.parameters()[0].get_shape(), (std::vector<int64_t>{4, 3}));
 }
 
 TEST_F(EmbeddingTest, AcceptsSupportedIntegerTokenDtypes) {
@@ -622,13 +644,19 @@ TEST_F(EmbeddingTest, RejectsInputRankOtherThanOneOrTwo) {
     EXPECT_THROW(embedding.forward(ids), std::invalid_argument);
 }
 
-// Gradient acceptance tests still need to be added once Embedding::forward is
-// connected to the project's autograd graph. The current implementation copies
-// rows into fresh output storage and does not register a backward/grad function.
-// For ids [2, 0, 2], the analytical gradient of sum(forward(ids)) with respect
-// to the 4x3 table should be row 0: [1,1,1], row 1: [0,0,0], row 2: [2,2,2],
-// row 3: [0,0,0]. A gradient checker should compare those analytical values
-// with finite differences after backward propagation is implemented.
+TEST_F(EmbeddingTest, BackwardAccumulatesRepeatedTokenRows) {
+    // loss = sum(forward([2, 0, 2])): token 2 is used twice, so its row gets 2.
+    Embedding embedding(/*vocab_size=*/4, /*embed_dim=*/3);
+    Tensor ids = make_tensor<int64_t>({2, 0, 2}, {3}, Dtype::INT64);
+    Function F{"test", {}, nullptr};
+    F.sum(embedding.forward(ids)).backward();
+
+    EXPECT_EQ(embedding_grad(embedding.parameters()[0]),
+              (std::vector<float>{1, 1, 1,
+                                  0, 0, 0,
+                                  2, 2, 2,
+                                  0, 0, 0}));
+}
 
 
 // ---------------------------------------------------------------------------
@@ -963,4 +991,118 @@ TEST(LayerNormTest, RejectsScalarInput) {
     );
 
     EXPECT_THROW(layer.forward(x), std::invalid_argument);
+}
+
+TEST(LayerNormTest, InheritsModule) {
+    EXPECT_TRUE((std::is_base_of<Module, LayerNorm>::value));
+
+    Sequential model;
+    model.add(std::make_shared<LayerNorm>(3));
+    EXPECT_EQ(model.parameters().size(), 2u);
+}
+
+TEST(LayerNormTest, BackwardGammaBetaAndInput) {
+    // y = LayerNorm([1, 2, 3]); loss = sum(y * w) with w = [1, 0, 0]
+    // so only the first normalized feature contributes.
+    LayerNorm layer(3);
+    Tensor x = make_tensor<float>({1, 2, 3}, {3}, Dtype::FLOAT32, true);
+    Tensor w = make_tensor<float>({1, 0, 0}, {3}, Dtype::FLOAT32);
+    Function F{"test", {}, nullptr};
+
+    F.sum(F.mul(layer.forward(x), w)).backward();
+
+    const std::vector<float> dgamma = to_vector<float>(*layer.parameters()[0].get_grad());
+    const std::vector<float> dbeta = to_vector<float>(*layer.parameters()[1].get_grad());
+    const std::vector<float> dx = to_vector<float>(*x.get_grad());
+
+    // xhat ≈ [-1.2247449, 0, 1.2247449]; dy = w
+    EXPECT_NEAR(dgamma[0], -1.2247449f, 0.001f);
+    EXPECT_NEAR(dgamma[1], 0.0f, 0.001f);
+    EXPECT_NEAR(dgamma[2], 0.0f, 0.001f);
+
+    EXPECT_NEAR(dbeta[0], 1.0f, 1e-6f);
+    EXPECT_NEAR(dbeta[1], 0.0f, 1e-6f);
+    EXPECT_NEAR(dbeta[2], 0.0f, 1e-6f);
+
+    // Finite-difference check on x: (loss(x+h e_i) - loss(x-h e_i)) / 2h
+    const float h = 1e-3f;
+    const std::vector<float> base{1, 2, 3};
+    for (size_t i = 0; i < 3; ++i) {
+        std::vector<float> plus = base;
+        std::vector<float> minus = base;
+        plus[i] += h;
+        minus[i] -= h;
+        const float lp = to_vector<float>(
+            F.sum(F.mul(layer.forward(make_tensor<float>(plus, {3}, Dtype::FLOAT32)), w)))[0];
+        const float lm = to_vector<float>(
+            F.sum(F.mul(layer.forward(make_tensor<float>(minus, {3}, Dtype::FLOAT32)), w)))[0];
+        EXPECT_NEAR(dx[i], (lp - lm) / (2.0f * h), 0.02f);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TextDataset
+// ---------------------------------------------------------------------------
+
+namespace {
+
+std::string write_temp_text(const std::string& contents) {
+    const std::string path = "mllib_textdataset_test.txt";
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out) {
+        throw std::runtime_error("could not write temp text dataset");
+    }
+    out << contents;
+    return path;
+}
+
+}  // namespace
+
+TEST(TextDatasetTest, BuildsCharVocabAndRoundTrips) {
+    const std::string path = write_temp_text("aba");
+    TextDataset data(path);
+
+    // Unique bytes in order: 'a', 'b'
+    EXPECT_EQ(data.vocab_size(), 2u);
+    EXPECT_EQ(data.vocabulary(), "ab");
+
+    Tensor ids = data.encode("aba");
+    EXPECT_EQ(ids.get_shape(), (std::vector<int64_t>{3}));
+    EXPECT_EQ(ids.get_dtype(), Dtype::UINT8);
+    EXPECT_EQ(to_vector<uint8_t>(ids), (std::vector<uint8_t>{0, 1, 0}));
+    EXPECT_EQ(data.decode(ids), "aba");
+}
+
+TEST(TextDatasetTest, BatchIsShiftedByOne) {
+    // "hello" has length 5; T=4 leaves only start index 0, so the batch is deterministic.
+    const std::string path = write_temp_text("hello");
+    TextDataset data(path);
+
+    auto batch = data.get_batch(2, 4);
+    const Tensor& x = batch.first;
+    const Tensor& y = batch.second;
+
+    EXPECT_EQ(x.get_shape(), (std::vector<int64_t>{2, 4}));
+    EXPECT_EQ(y.get_shape(), (std::vector<int64_t>{2, 4}));
+    EXPECT_EQ(x.get_dtype(), Dtype::UINT8);
+
+    const std::vector<uint8_t> x_vals = to_vector<uint8_t>(x);
+    const std::vector<uint8_t> y_vals = to_vector<uint8_t>(y);
+    const std::vector<uint8_t> full = to_vector<uint8_t>(data.encode("hello"));
+
+    for (size_t b = 0; b < 2; ++b) {
+        for (size_t t = 0; t < 4; ++t) {
+            EXPECT_EQ(x_vals[b * 4 + t], full[t]);
+            EXPECT_EQ(y_vals[b * 4 + t], full[t + 1]);
+        }
+    }
+}
+
+TEST(TextDatasetTest, RejectsUnknownCharacterAndShortText) {
+    const std::string path = write_temp_text("aa");
+    TextDataset data(path);
+
+    EXPECT_THROW(data.encode("b"), std::out_of_range);
+    EXPECT_THROW(data.get_batch(1, 2), std::invalid_argument);
+    EXPECT_THROW(data.get_batch(0, 1), std::invalid_argument);
 }

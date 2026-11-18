@@ -2,6 +2,7 @@
 #define LAYERNORM_H
 
 #include <vector>
+#include "module.h"
 #include "tensor.h"
 
 /**
@@ -39,11 +40,10 @@
  * The small constant eps is added to the variance before taking the square root to prevent 
  * division by zero when all values in a token vector are identical.
  *
- * The backward pass does not require a custom implementation. The forward computation can be 
- * constructed from existing tensor operations such as mean, sub, mul, sqrt, div, and add, 
- * allowing the autograd system to compute gradients automatically.
+ * Forward records a layernorm node on the autograd graph when any of x, gamma, or beta
+ * requires gradients. Backward uses the saved input and eps to compute dx, dgamma, and dbeta.
  */
-class LayerNorm {
+class LayerNorm : public Module {
     private:
 
         /**
@@ -124,16 +124,17 @@ class LayerNorm {
          * @return A tensor with the same shape as x, containing the normalized and 
          *         affine-transformed values.
          */
-        Tensor forward(const Tensor& x) const;
+        Tensor forward(const Tensor& x) const override;
 
         /**
          * @brief Returns the learnable parameters of this LayerNorm.
          *
          * LayerNorm has two learnable parameters: gamma (learned scale) and beta (learned shift).
+         * The returned tensors share storage and grads with the layer, so an optimizer can update them.
          *
          * @return A vector containing gamma and beta.
          */
-        std::vector<Tensor> parameters() const;
+        std::vector<Tensor> parameters() const override;
 };
 
 #endif

@@ -14,7 +14,7 @@
  * input x: (B, T, C) B sequences, T tokens each, C = embed_dim numbers per token
  * output: (B, T, C) same shape, so blocks stack and the result can be added to x
  * 
- * Each head works on head_size / C / num_haeds of the C columns:
+ * Each head works on head_size / C / num_heads of the C columns:
  * q = x @ Wq what each token is looking for
  * k = x @ Wk what each token offers to 
  * v = X @ Wv what each token passes on if picked
@@ -43,7 +43,7 @@ class CausalSelfAttention : public Module {
      */
     CausalSelfAttention(size_t embed_dim, size_t num_heads);
 
-    /**]
+    /**
      * @param x FLOAT32 tensor of shape (B,T,C)
      * @return Tensor of shape (B,T,C)
      */

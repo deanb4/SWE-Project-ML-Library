@@ -1,6 +1,7 @@
 #include "mllib/data.h"
 #include <cstring>
 #include <fstream>
+#include <iterator>
 #include <stdexcept>
 
 #include <cstdint>
@@ -210,4 +211,137 @@ Tensor select_rows(const Tensor& t, const std::vector<int64_t>& rows) {
     }
     
     return Tensor(std::move(storage), out_shape, Device::CPU, false, t.get_dtype());
+}
+
+
+namespace {
+    Tensor make_uint8_t_tensor(const std::vector<uint8_t>& values, std::vector<int64_t> shape) {
+        const size_t n = values.size();
+        auto storage = std::make_shared<Storage>(n * sizeof(uint8_t), Device::CPU);
+        if (n > 0) {
+            std::memcpy(storage->get_ptr(), values.data(), n * sizeof(uint8_t));
+        }
+        return Tensor(std::move(storage), std::move(shape), Device::CPU, false, Dtype::UINT8);
+    }
+}
+
+TextDataset::TextDataset(const std::string& path) : char_to_id(256, -1), rng(std::random_device{}()) {
+
+    std::ifstream file(path, std::ios::binary);
+    if (!file.is_open()) {
+        throw std::runtime_error("TextDataset: could not open file " + path);
+    }
+
+    //Assign string with contents of the text file from beginning to end
+    text.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+
+    if (file.bad()) {
+        throw std::runtime_error("TextDataset: error while reading " + path);
+    }
+    if (text.empty()) {
+        throw std::runtime_error("TextDataset: file is empty " + path);
+    }
+
+    bool seen[256] = {};
+    for (unsigned char c : text) {
+        seen[c] = true;
+    }
+    vocab.clear();
+    for (int i = 0; i < 256; ++i) {
+        if (seen[i]) {
+            //character associated with token id from [0, vocab_size)
+            char_to_id[i] = static_cast<int>(vocab.size());
+            vocab.push_back(static_cast<char>(i));
+        }
+    }
+
+    encoded.resize(text.size());
+    for (size_t i = 0; i < text.size(); ++i) {
+        encoded[i] = char_to_id[static_cast<unsigned char>(text[i])];
+    }
+}
+
+size_t TextDataset::vocab_size() const {
+    return vocab.size();
+}
+
+const std::string& TextDataset::vocabulary() const {
+    return vocab;
+}
+
+Tensor TextDataset::encode(const std::string& s) const {
+    std::vector<uint8_t> ids(s.size());
+    for (size_t i = 0; i < s.size(); ++i) {
+        //check if character is in vocabulary
+        const int id = char_to_id[static_cast<unsigned char>(s[i])];
+        if (id == -1) {
+            throw std::out_of_range("TextDataset::encode: character is not in the vocabulary");
+        }
+        ids[i] = static_cast<uint8_t>(id);
+    }
+    return make_uint8_t_tensor(ids, {static_cast<int64_t>(ids.size())});
+}
+
+std::string TextDataset::decode(const Tensor& ids) const {
+    if (ids.get_dtype() != Dtype::UINT8) {
+        throw std::invalid_argument("TextDataset::decode: ids must have UINT8 dtype");
+    }
+    if (ids.get_device() != Device::CPU) {
+        throw std::invalid_argument("TextDataset::decode: only CPU tensors are supported");
+    }
+
+    const size_t n = ids.num_elements();
+    const uint8_t* values = static_cast<const uint8_t*>(ids.get_data()->get_ptr());
+
+    std::string out;
+    out.resize(n);
+    for (size_t i = 0; i < n; ++i) {
+        //Since values consists of uint8_t numbers, it is impossible for it to be negative.
+        //Therefore, only need to check if the id is greater than or equal to the vocab size
+        if (static_cast<size_t>(values[i]) >= vocab.size()) {
+            throw std::out_of_range("TextDataset::decode: token ID is outside the vocabulary");
+        }
+        out[i] = vocab[values[i]];
+    }
+    return out;
+}
+
+std::pair<Tensor, Tensor> TextDataset::get_batch(size_t batch_size, size_t block_size) const {
+    if (batch_size == 0) {
+        throw std::invalid_argument("TextDataset::get_batch: batch_size must be greater than zero");
+    }
+    if (block_size == 0) {
+        throw std::invalid_argument("TextDataset::get_batch: block_size must be greater than zero");
+    }
+    if (encoded.size() < block_size + 1) {
+        throw std::invalid_argument(
+            "TextDataset::get_batch: text is shorter than block_size + 1");
+    }
+
+    //The latest starting point in the text to safely extract a block from
+    //The block should not exceed the end of the text
+    const size_t max_start = encoded.size() - block_size - 1;
+    std::uniform_int_distribution<size_t> start_dist(0, max_start);
+
+    const size_t n = batch_size * block_size;
+    std::vector<uint8_t> x_values(n);
+    std::vector<uint8_t> y_values(n);
+
+    for (size_t b = 0; b < batch_size; ++b) {
+        //random starting point in text
+        const size_t start = start_dist(rng);
+        for (size_t t = 0; t < block_size; ++t) {
+            x_values[b * block_size + t] = encoded[start + t];
+            y_values[b * block_size + t] = encoded[start + t + 1];
+        }
+    }
+
+    const std::vector<int64_t> shape{
+        static_cast<int64_t>(batch_size),
+        static_cast<int64_t>(block_size)
+    };
+    return {
+        make_uint8_t_tensor(x_values, shape),
+        make_uint8_t_tensor(y_values, shape)
+    };
 }

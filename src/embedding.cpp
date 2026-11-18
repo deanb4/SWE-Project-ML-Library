@@ -1,4 +1,6 @@
 #include "mllib/embedding.h"
+#include "mllib/autograd.h"
+#include "mllib/function.h"
 #include <cstdint>
 #include <cstring>
 #include <limits>
@@ -205,7 +207,7 @@ Tensor Embedding::forward(const Tensor& ids) const {
 
     //Construct and return the output tensor
     //Currently only CPU supported MAKE NOTE OF THIS <------------------------------------------------------------------------------------
-    return Tensor(
+    Tensor out(
         std::move(output_storage),
         std::move(output_shape),
         Device::CPU,
@@ -213,8 +215,17 @@ Tensor Embedding::forward(const Tensor& ids) const {
         Dtype::FLOAT32
     );
 
+    //Token IDs are indices, not values; they are saved for backward but do not receive gradients.
+    //Each output row's gradient is added into weight[id].
+    if (out.get_requires_grad() && Autograd::is_grad_enabled()) {
+        std::vector<std::shared_ptr<Tensor>> inputs{std::make_shared<Tensor>(weight)};
+        out.set_grad_fn(std::make_shared<Function>("embedding", inputs, std::make_shared<Tensor>(ids)));
+    }
+
+    return out;
+
 }
 
-std::shared_ptr<Tensor> Embedding::parameters() const {
-    return std::make_shared<Tensor>(weight);
+std::vector<Tensor> Embedding::parameters() const {
+    return {weight};
 }

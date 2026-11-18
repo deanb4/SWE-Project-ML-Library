@@ -3,6 +3,7 @@
 
 #include <vector>
 #include <cstddef>
+#include "module.h"
 #include "tensor.h"
 
 /**
@@ -25,7 +26,7 @@
  * and do not receive gradients. During backpropagation, gradients from repeated token IDs 
  * are accumulated into the corresponding row of the embedding table.
  */
-class Embedding {
+class Embedding : public Module {
     private:
 
         /**
@@ -61,19 +62,24 @@ class Embedding {
          * Each token ID must be in the range `[0, vocab_size)`. An invalid ID should result in 
          * an error rather than an out-of-bounds access.
          * 
+         * If the embedding table requires gradients, the output is attached to the autograd
+         * graph. Backward gathers each output row's gradient into the table row it was
+         * looked up from, adding when the same token ID appears more than once.
+         * 
          * @param ids A tensor containing integer token IDs.
          * @return A tensor containing the corresponding embedding vectors.
          */
-        Tensor forward(const Tensor& ids) const;
+        Tensor forward(const Tensor& ids) const override;
 
         /**
          * @brief Returns the learnable parameters of this embedding.
-         * 
+         *
          * The embedding module has a single learnable parameter: the embedding table stored in `weight`.
-         * 
-         * @return A shared pointer to the embedding table.
+         * The returned tensor shares storage and grads with the table, so an optimizer can update it.
+         *
+         * @return A one-element vector containing the embedding table.
          */
-        std::shared_ptr<Tensor> parameters() const;
+        std::vector<Tensor> parameters() const override;
 };
 
 

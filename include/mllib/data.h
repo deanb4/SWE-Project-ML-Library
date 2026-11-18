@@ -3,7 +3,9 @@
 
 
 #include <cstdint>
+#include <random>
 #include <string>
+#include <utility>
 #include <vector>
 #include "tensor.h"
 
@@ -30,5 +32,54 @@ Tensor load_labels(const std::string& path);
  * @throws std::out_of_range If a row index is outside t.
  */
 Tensor select_rows(const Tensor& t, const std::vector<int64_t>& rows);
+
+/**
+ * @class TextDataset
+ * @brief Byte-level language-modeling dataset loaded from a .txt file.
+ *
+ * The file is read as raw bytes. Unique characters become a vocabulary in byte order,
+ * so encode() / decode() map between text and integer token IDs in `[0, vocab_size)`.
+ *
+ * get_batch(B, T) draws B random windows of T tokens. Targets are the same windows
+ * shifted one character to the right (next-character prediction).
+ */
+class TextDataset {
+    private:
+        std::string text;
+        std::string vocab;
+        std::vector<int> char_to_id;
+        std::vector<uint8_t> encoded;
+        mutable std::mt19937 rng;
+
+    public:
+        /**
+         * @brief Reads `path` and builds a byte vocabulary from its contents.
+         * @throws std::runtime_error If the file cannot be opened or is empty.
+         */
+        explicit TextDataset(const std::string& path);
+
+        size_t vocab_size() const;
+
+        /** Characters in ID order: vocabulary()[id] is the byte encoded as `id`. */
+        const std::string& vocabulary() const;
+
+        /** Encodes string `s` as a UINT8 tensor of IDs of shape (L). Unknown characters throw. */
+        Tensor encode(const std::string& s) const;
+
+        /** Decodes a UINT8 tensor of token IDs back to a string. */
+        std::string decode(const Tensor& ids) const;
+
+        /**
+         * @brief Random mini-batch for next-character prediction.
+         *
+         * @param batch_size B, number of independent windows.
+         * @param block_size T, number of tokens in each window.
+         * @return `{x, y}` both UINT8 of shape (B, T), with `y[b][t]` equal to the
+         *         character that follows `x[b][t]` in the file.
+         *
+         * @throws std::invalid_argument If B or T is zero, or the text is shorter than T + 1.
+         */
+        std::pair<Tensor, Tensor> get_batch(size_t batch_size, size_t block_size) const;
+};
 
 #endif
