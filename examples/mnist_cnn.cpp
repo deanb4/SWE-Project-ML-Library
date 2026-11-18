@@ -55,6 +55,34 @@ struct Cnn {
     }
 };
 
+// IMPORTANT!! NEW WAY OF CREATING MODEL AFTER ADDITION OF MODULE.h & SEQUENTIAL.h
+
+// struct Cnn : Module {
+//     Conv2d conv1{1, 8, 3, 2, 1};
+//     Conv2d conv2{8, 16, 3, 2, 1};
+//     Linear fc1{16 * 7 * 7, 128};
+//     Linear fc2{128, 10};
+
+//     Cnn() {
+//         register_module(conv1);
+//         register_module(conv2);
+//         register_module(fc1);
+//         register_module(fc2);
+//     }
+
+//     // images: (N, 784) rows straight from load_images
+//     Tensor forward(const Tensor& images) const override {
+//         Function F("cnn", {}, nullptr);
+//         int64_t n = images.get_shape()[0];
+//         Tensor x = F.reshape(images, {n, 1, 28, 28});
+//         x = F.relu(conv1(x));
+//         x = F.relu(conv2(x));
+//         x = F.relu(fc1(F.reshape(x, {n, -1})));
+//         return fc2(x);
+//     }
+// };
+
+
 // Shifts pixels from 0..1 to mean 0, std 1, using MNIST's average (0.1307) and spread (0.3081).
 // With only positive pixels, all the weights in a kernel get pushed the same way at once,
 // which makes learning zig-zag and slow.

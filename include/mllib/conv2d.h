@@ -5,6 +5,7 @@
 #include <cstddef>
 #include "tensor.h"
 #include "function.h"
+#include "module.h"
 
 /**
  * @class Conv2d

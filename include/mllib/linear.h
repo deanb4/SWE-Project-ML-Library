@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <vector>
 #include "tensor.h"
+#include "module.h"
 
 /** 
  * @class linear
@@ -16,7 +17,7 @@
  * which suits layers followed by rely. The bias starts at zero.
  */
 
-class Linear {
+class Linear : public Module {
     private:
         Tensor weight;
         Tensor bias;
@@ -31,13 +32,13 @@ class Linear {
      * @param x FLOAT32 tensor of shape (N, in_features)
      * @return Tensor of shape (N, out_features)
      */
-    Tensor forward(const Tensor& x) const;
+    Tensor forward(const Tensor& x) const override;
 
     /**
      * @return {weight, biasd}. They share storage and grads with the layer's own tensors, 
      * so an optimizer can update them
      */
-    std::vector<Tensor> parameters() const;
+    std::vector<Tensor> parameters() const override;
 };
 
 #endif
